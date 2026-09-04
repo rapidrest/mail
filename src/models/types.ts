@@ -1,0 +1,604 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import { BaseEntity } from "@rapidrest/service-core";
+
+/**
+ * The kind of well-known folder a `Folder` represents. `USER` is any folder created by the mailbox owner
+ * (or a client) rather than one of the special system folders every mailbox is provisioned with.
+ */
+export enum FolderType {
+    INBOX = "inbox",
+    SENT_ITEMS = "sent_items",
+    DRAFTS = "drafts",
+    DELETED_ITEMS = "deleted_items",
+    OUTBOX = "outbox",
+    JUNK = "junk",
+    CALENDAR = "calendar",
+    CONTACTS = "contacts",
+    TASKS = "tasks",
+    NOTES = "notes",
+    USER = "user",
+}
+
+/**
+ * Defines a single mailbox belonging to a `User`. A mailbox is the root of a user's Folder hierarchy and the
+ * unit that MAPI/EAS clients log on to.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Mailbox extends BaseEntity {
+    /** The unique identifier of the `User` (from `@rapidrest/auth`) that owns this mailbox. */
+    ownerUserUid: string;
+
+    /** The primary SMTP address that mail addressed to this mailbox is delivered under. */
+    primarySmtpAddress: string;
+
+    /** Additional SMTP addresses that also deliver to this mailbox. */
+    aliasAddresses: string[];
+
+    /** The display name shown to recipients (e.g. in the `From` header) for mail sent from this mailbox. */
+    displayName: string;
+
+    /** The IANA timezone identifier (e.g. `America/Los_Angeles`) used to render dates/times for this mailbox. */
+    timezone: string;
+
+    /** The maximum total size, in bytes, of all messages/attachments this mailbox may store. */
+    quotaBytes: number;
+
+    /** The current total size, in bytes, of all messages/attachments stored in this mailbox. */
+    usedBytes: number;
+}
+
+/**
+ * Defines a single folder within a `Mailbox`. Folders form a hierarchy via `parentFolderUid` and hold
+ * `Message`, `CalendarEvent`, `Contact`, `Task`, or `Note` records depending on `type`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Folder extends BaseEntity {
+    /** The unique identifier of the `Mailbox` this folder belongs to. */
+    mailboxUid: string;
+
+    /** The display name of the folder. */
+    name: string;
+
+    /** The kind of well-known folder this is, or `USER` for an ordinary user-created folder. */
+    type: FolderType;
+
+    /** The unique identifier of the parent folder, or `undefined` if this is a top-level folder. */
+    parentFolderUid?: string;
+
+    /** The number of unread items contained directly in this folder. */
+    unreadCount: number;
+
+    /** The total number of items contained directly in this folder. */
+    totalCount: number;
+
+    /**
+     * A monotonically increasing counter bumped on every change (add/change/delete of a contained item, or of
+     * the folder itself) to this folder's contents. EAS `SyncKey` and MAPI ICS-style folder sync state are both
+     * derived from this value.
+     */
+    syncKeyVersion: number;
+}
+
+/** The kind of address a `Recipient` represents on a `Message`. */
+export enum RecipientType {
+    TO = "to",
+    CC = "cc",
+    BCC = "bcc",
+}
+
+/** An embedded recipient (or sender) address on a `Message`. */
+export interface Recipient {
+    address: string;
+    displayName?: string;
+    type: RecipientType;
+}
+
+/** The read/answered/flagged state of a `Message`. */
+export interface MessageFlags {
+    read: boolean;
+    flagged: boolean;
+    answered: boolean;
+    forwarded: boolean;
+}
+
+export enum MessageImportance {
+    LOW = "low",
+    NORMAL = "normal",
+    HIGH = "high",
+}
+
+/**
+ * Defines a single email message stored in a `Folder`. The raw MIME source and rendered bodies are not stored
+ * inline on this record — they live in the configured `BlobStore`, referenced by `bodyBlobKey`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Message extends BaseEntity {
+    /** The unique identifier of the `Folder` this message currently resides in. */
+    folderUid: string;
+
+    /** The unique identifier of the `Mailbox` this message belongs to. */
+    mailboxUid: string;
+
+    /** The RFC 5322 `Message-ID` header value, used to deduplicate and thread messages. */
+    messageId: string;
+
+    subject: string;
+
+    from: Recipient;
+
+    recipients: Recipient[];
+
+    sentDate: Date;
+
+    receivedDate: Date;
+
+    /** The key under which the raw MIME source and rendered HTML/text bodies are stored in the `BlobStore`. */
+    bodyBlobKey: string;
+
+    /** A short plain-text preview of the message body, generated at ingestion time. */
+    bodyPreview: string;
+
+    flags: MessageFlags;
+
+    importance: MessageImportance;
+
+    /** The RFC 5322 `In-Reply-To` header value, if this message is a reply. */
+    inReplyTo?: string;
+
+    /** The RFC 5322 `References` header value(s), for building conversation threads. */
+    references: string[];
+
+    hasAttachments: boolean;
+
+    /** The unique identifier of this message's `ScanResult`, once scanning has completed. */
+    scanResultUid?: string;
+
+    /** The timestamp this message was last (re)indexed for full-text search, if ever. */
+    searchIndexedAt?: Date;
+}
+
+/**
+ * Defines a single file attached to a `Message`. The binary content is stored in the configured `BlobStore`,
+ * referenced by `blobKey`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Attachment extends BaseEntity {
+    /** The unique identifier of the `Message` this attachment belongs to. */
+    messageUid: string;
+
+    filename: string;
+
+    mimeType: string;
+
+    sizeBytes: number;
+
+    /** The key under which the attachment's binary content is stored in the `BlobStore`. */
+    blobKey: string;
+
+    /** The MIME `Content-ID`, present when this attachment is referenced inline by the message's HTML body. */
+    contentId?: string;
+
+    /** `true` if this attachment is displayed inline in the message body rather than listed separately. */
+    isInline: boolean;
+
+    /** The key under which this attachment's extracted plain text is stored in the `BlobStore`, once extracted. */
+    extractedTextBlobKey?: string;
+
+    /** The unique identifier of this attachment's `ScanResult`, once scanning has completed. */
+    scanResultUid?: string;
+}
+
+export enum ContactAddressKind {
+    HOME = "home",
+    WORK = "work",
+    OTHER = "other",
+}
+
+export interface ContactEmail {
+    address: string;
+    type: ContactAddressKind;
+}
+
+export interface ContactPhone {
+    phoneNumber: string;
+    type: ContactAddressKind;
+}
+
+export interface ContactPostalAddress {
+    street?: string;
+    city?: string;
+    state?: string;
+    postalCode?: string;
+    country?: string;
+    type: ContactAddressKind;
+}
+
+/**
+ * Defines a single address book entry. Contacts are also the source of truth for MAPI NSPI and EAS GAL
+ * (Global Address List) lookups against a mailbox's own address book.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Contact extends BaseEntity {
+    /** The unique identifier of the `Mailbox` this contact belongs to. */
+    mailboxUid: string;
+
+    /** The unique identifier of the `Folder` (of type `CONTACTS`) this contact resides in. */
+    folderUid: string;
+
+    /** The unique identifier of the `ContactList` this contact is a member of, if any. */
+    contactListUid?: string;
+
+    displayName: string;
+
+    givenName?: string;
+
+    surname?: string;
+
+    emails: ContactEmail[];
+
+    phones: ContactPhone[];
+
+    addresses: ContactPostalAddress[];
+
+    company?: string;
+
+    jobTitle?: string;
+
+    notes?: string;
+
+    /** The key under which the contact's photo is stored in the `BlobStore`, if one has been set. */
+    photoBlobKey?: string;
+
+    /** The unique identifier of an external directory entry (e.g. GAL) this contact was sourced from, if any. */
+    sourceUid?: string;
+}
+
+/**
+ * Defines a named grouping (address book / distribution list) of `Contact` records within a `Mailbox`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface ContactList extends BaseEntity {
+    mailboxUid: string;
+
+    name: string;
+}
+
+export enum AttendeeRole {
+    REQUIRED = "required",
+    OPTIONAL = "optional",
+    RESOURCE = "resource",
+}
+
+export enum AttendeeResponseStatus {
+    NEEDS_ACTION = "needsAction",
+    ACCEPTED = "accepted",
+    DECLINED = "declined",
+    TENTATIVE = "tentative",
+}
+
+/** An embedded attendee of a `CalendarEvent`. */
+export interface Attendee {
+    address: string;
+    displayName?: string;
+    role: AttendeeRole;
+    responseStatus: AttendeeResponseStatus;
+    isOrganizer: boolean;
+}
+
+export enum RecurrenceFrequency {
+    DAILY = "daily",
+    WEEKLY = "weekly",
+    MONTHLY = "monthly",
+    YEARLY = "yearly",
+}
+
+/** An embedded RFC 5545 (`RRULE`)-style recurrence definition on a `CalendarEvent`. */
+export interface RecurrenceRule {
+    freq: RecurrenceFrequency;
+    interval: number;
+    byDay?: string[];
+    byMonthDay?: number[];
+    byMonth?: number[];
+    count?: number;
+    until?: Date;
+    /** Specific occurrence dates removed from the recurrence set. */
+    exceptions: Date[];
+}
+
+export enum CalendarEventStatus {
+    TENTATIVE = "tentative",
+    CONFIRMED = "confirmed",
+    CANCELLED = "cancelled",
+}
+
+export enum BusyStatus {
+    FREE = "free",
+    BUSY = "busy",
+    TENTATIVE = "tentative",
+    OUT_OF_OFFICE = "oof",
+}
+
+/**
+ * Defines a single calendar event/meeting stored in a `Folder` of type `CALENDAR`. External sharing and
+ * scheduling permissions for the containing folder are governed by the platform's `AccessControlList` (see
+ * `ACLAction`), not by any field on this type — see the architecture plan for the `"read"`/`"freebusy"`/
+ * `"edit"`/`"delegate"` action convention.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface CalendarEvent extends BaseEntity {
+    /** The unique identifier of the `Folder` (of type `CALENDAR`) this event resides in. */
+    folderUid: string;
+
+    /** The unique identifier of the `Mailbox` this event belongs to. */
+    mailboxUid: string;
+
+    title: string;
+
+    location?: string;
+
+    startDate: Date;
+
+    endDate: Date;
+
+    allDay: boolean;
+
+    /** The IANA timezone identifier the event's start/end times were authored in. */
+    timezone: string;
+
+    organizer: Recipient;
+
+    attendees: Attendee[];
+
+    recurrenceRule?: RecurrenceRule;
+
+    /** For a single occurrence of a recurring event that has been individually modified, its original start date. */
+    recurrenceId?: Date;
+
+    status: CalendarEventStatus;
+
+    busyStatus: BusyStatus;
+
+    /** The number of minutes before `startDate` that a reminder should be dispatched, if any. */
+    reminderMinutesBeforeStart?: number;
+
+    /** A stable identifier (RFC 5545 `UID`) for this event, shared across all clients/protocols and iTIP messages. */
+    icalUid: string;
+
+    /** The iTIP revision counter (RFC 5546 `SEQUENCE`), incremented on every scheduling-relevant change. */
+    sequence: number;
+}
+
+/**
+ * Supports anonymous, unauthenticated external access to a `CalendarEvent` folder's free/busy information (or
+ * broader access, per `permittedActions`) via a shareable link. `token` acts as a resolvable `userOrRoleId`
+ * against the folder's `AccessControlList`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface CalendarShareLink extends BaseEntity {
+    /** The unique, unguessable token embedded in the shared URL and used as the ACL `userOrRoleId`. */
+    token: string;
+
+    /** The unique identifier of the `Folder` (of type `CALENDAR`) being shared. */
+    folderUid: string;
+
+    /** The actions (see `ACLAction`) granted to holders of this link, e.g. `["freebusy"]` or `["read"]`. */
+    permittedActions: string[];
+
+    /** The date/time after which this link is no longer valid. */
+    expiresAt?: Date;
+
+    createdByUserUid: string;
+}
+
+export enum TaskPriority {
+    LOW = "low",
+    NORMAL = "normal",
+    HIGH = "high",
+}
+
+/**
+ * Defines a single to-do item stored in a `Folder` of type `TASKS`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Task extends BaseEntity {
+    mailboxUid: string;
+
+    folderUid: string;
+
+    title: string;
+
+    body?: string;
+
+    dueDate?: Date;
+
+    completed: boolean;
+
+    priority: TaskPriority;
+
+    reminderDate?: Date;
+}
+
+/**
+ * Defines a single free-form note stored in a `Folder` of type `NOTES`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface Note extends BaseEntity {
+    mailboxUid: string;
+
+    folderUid: string;
+
+    title: string;
+
+    body: string;
+
+    /** An optional display color hint (e.g. a hex code) for the note, as commonly supported by note UIs. */
+    color?: string;
+}
+
+/** The kind of record a `ScanResult` was produced for. */
+export enum ScanTargetType {
+    MESSAGE = "message",
+    ATTACHMENT = "attachment",
+}
+
+export enum SpamVerdict {
+    CLEAN = "clean",
+    SUSPECT = "suspect",
+    SPAM = "spam",
+}
+
+export enum AvVerdict {
+    CLEAN = "clean",
+    INFECTED = "infected",
+    ERROR = "error",
+}
+
+/**
+ * Defines the recorded outcome of running the SPAM/AV `ScanPipeline` against a `Message` or `Attachment`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface ScanResult extends BaseEntity {
+    targetType: ScanTargetType;
+
+    /** The unique identifier of the `Message` or `Attachment` (per `targetType`) that was scanned. */
+    targetUid: string;
+
+    spamScore: number;
+
+    spamVerdict: SpamVerdict;
+
+    /** The symbolic names (e.g. rspamd symbols) that contributed to the spam verdict. */
+    spamSymbols: string[];
+
+    avVerdict: AvVerdict;
+
+    /** The name of the malware signature matched, if `avVerdict` is `INFECTED`. */
+    avSignatureName?: string;
+
+    scannedAt: Date;
+
+    /** The version identifiers of the spam/AV engines used, for auditability as signatures update over time. */
+    providerVersions: { spam?: string; av?: string };
+}
+
+export enum QuarantineReason {
+    INFECTED = "infected",
+    SPAM_POLICY = "spam_policy",
+    OTHER = "other",
+}
+
+/**
+ * Defines a single message held out of normal delivery pending review, because it was found infected or
+ * because organizational policy quarantines spam above a configured threshold rather than delivering to Junk.
+ * A quarantined message never appears in any `Folder` or client sync until released.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface QuarantineEntry extends BaseEntity {
+    /** The unique identifier of the `Mailbox` the message was addressed to. */
+    mailboxUid: string;
+
+    /** The unique identifier of the `Message` record, if one was ever created for this delivery attempt. */
+    originalMessageUid?: string;
+
+    reason: QuarantineReason;
+
+    scanResultUid: string;
+
+    /** The key under which the original raw MIME source is stored in the `BlobStore`. */
+    rawBlobKey: string;
+
+    releasedAt?: Date;
+
+    releasedByUserUid?: string;
+}
+
+/**
+ * Tracks whether a given entity's content is currently reflected in a specific `SearchProvider`'s index,
+ * decoupling "committed to the primary datastore" from "visible in search" (the two are only eventually
+ * consistent, reconciled by `SearchIndexJob`).
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface SearchIndexState extends BaseEntity {
+    entityType: string;
+
+    entityUid: string;
+
+    /** The name of the `SearchProvider` implementation this state row applies to. */
+    provider: string;
+
+    indexedAt: Date;
+
+    /** A content hash used to detect whether re-indexing is needed after this state was last recorded. */
+    contentHash: string;
+}
+
+export enum IngestStatus {
+    PENDING = "pending",
+    SCANNING = "scanning",
+    DELIVERED = "delivered",
+    FAILED = "failed",
+}
+
+/**
+ * A staging record for one raw message accepted by the MTA (Postfix) and handed to `MailIngestRoute`, before
+ * scanning/parsing/delivery has run. Kept separate from `QuarantineEntry` (which holds messages that *failed*
+ * scanning) so the two lifecycles — "not yet scanned" vs. "scanned and held" — aren't conflated. Drained by
+ * `ScanQueueJob`, which runs the `ScanPipeline` and then either delivers the message to a `Folder`, files it in
+ * `QuarantineEntry`, or (on repeated processing failure) marks this entry `FAILED` for operator review.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface IngestQueueEntry extends BaseEntity {
+    /** The resolved `Mailbox` this message is addressed to. */
+    mailboxUid: string;
+
+    envelopeFrom: string;
+
+    envelopeTo: string[];
+
+    /** The key under which the raw MIME source is stored in the `BlobStore`. */
+    rawBlobKey: string;
+
+    status: IngestStatus;
+
+    errorMessage?: string;
+}
+
+/**
+ * Tracks the EAS sync state of a single paired mobile device against a `Mailbox`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export interface DeviceSyncState extends BaseEntity {
+    mailboxUid: string;
+
+    deviceId: string;
+
+    deviceType: string;
+
+    /** The EAS provisioning policy key most recently acknowledged by the device. */
+    policyKey?: string;
+
+    /** The per-folder EAS `SyncKey` cursor, keyed by `Folder.uid`. */
+    folderSyncKeys: Record<string, string>;
+
+    lastSyncAt?: Date;
+
+    provisioned: boolean;
+}
