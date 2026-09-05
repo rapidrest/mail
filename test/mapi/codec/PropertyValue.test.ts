@@ -11,11 +11,14 @@ import {
     PropertyType,
     readPropertyTag,
     readPropertyValue,
+    readTaggedPropertyValue,
     readTypedPropertyValue,
     writePropertyTag,
     writePropertyValue,
+    writeTaggedPropertyValue,
     writeTypedPropertyValue,
     type PropertyTag,
+    type TaggedPropertyValue,
     type TypedPropertyValue,
 } from "../../../src/mapi/codec/PropertyValue.js";
 
@@ -137,6 +140,16 @@ describe("PropertyValue Tests", () => {
             writeTypedPropertyValue(writer, typed);
             const decoded = readTypedPropertyValue(new BufferReader(writer.toBuffer()));
             expect(decoded).toEqual(typed);
+        });
+    });
+
+    describe("TaggedPropertyValue", () => {
+        it("Round-trips the full PropertyTag (PropertyId and PropertyType) alongside the value.", () => {
+            const tagged: TaggedPropertyValue = { propertyId: 0x0037, propertyType: PropertyType.PtypString, value: "Test Subject" };
+            const writer = new BufferWriter();
+            writeTaggedPropertyValue(writer, tagged);
+            const decoded = readTaggedPropertyValue(new BufferReader(writer.toBuffer()));
+            expect(decoded).toEqual(tagged);
         });
     });
 

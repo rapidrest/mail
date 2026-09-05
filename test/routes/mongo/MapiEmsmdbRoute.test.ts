@@ -20,11 +20,11 @@ import { FolderMongo } from "../../../src/models/mongo/FolderMongo.js";
 import { MessageMongo } from "../../../src/models/mongo/MessageMongo.js";
 import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { InMemoryBlobStore, registerTestDoubles } from "../../testDoubles.js";
+import { InMemoryBlobStore, RecordingMailTransport, registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
 import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
-import { PropertyType, readPropertyValue, writePropertyTag } from "../../../src/mapi/codec/PropertyValue.js";
+import { PropertyType, readPropertyValue, writePropertyTag, writeTaggedPropertyValue, type TaggedPropertyValue } from "../../../src/mapi/codec/PropertyValue.js";
 import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
 const mongod: MongoMemoryServer = new MongoMemoryServer({
@@ -100,6 +100,10 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
 
     const blobStore = function (): InMemoryBlobStore {
         return objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
+    };
+
+    const mailTransport = function (): RecordingMailTransport {
+        return objectFactory.getInstance<RecordingMailTransport>("MailTransport")!;
     };
 
     const connect = async function (headers: Record<string, string> = {}) {
@@ -881,6 +885,205 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
             const dataSize = readStreamRopsReader.readUInt16LE();
             expect(dataSize).toBe(streamSize);
             expect(readPropertyValue(readStreamRopsReader, PropertyType.PtypString)).toBe("Actual body text.");
+        });
+    });
+
+    describe("Compose/Send (RopCreateMessage / RopSetProperties / RopOpenStream / RopWriteStream / RopSaveChangesMessage / RopSubmitMessage)", () => {
+        const buildLogonRops = function (outputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0xfe);
+            writer.writeUInt8(0);
+            writer.writeUInt8(outputHandleIndex);
+            writer.writeUInt8(0x01);
+            writer.writeUInt32LE(0);
+            writer.writeUInt32LE(0);
+            writer.writeUInt16LE(0);
+            return writer.toBuffer();
+        };
+
+        const buildCreateMessageRops = function (inputHandleIndex: number, outputHandleIndex: number, folderId: bigint): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x06);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(outputHandleIndex);
+            writer.writeUInt16LE(0); // CodePageId
+            writer.writeBigUInt64LE(folderId);
+            writer.writeUInt8(0); // AssociatedFlag
+            return writer.toBuffer();
+        };
+
+        const buildSetPropertiesRops = function (inputHandleIndex: number, values: TaggedPropertyValue[]): Buffer {
+            const valuesWriter = new BufferWriter();
+            for (const value of values) {
+                writeTaggedPropertyValue(valuesWriter, value);
+            }
+            const valuesBytes = valuesWriter.toBuffer();
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x0a);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt16LE(2 + valuesBytes.length);
+            writer.writeUInt16LE(values.length);
+            writer.writeBytes(valuesBytes);
+            return writer.toBuffer();
+        };
+
+        const buildOpenStreamRops = function (
+            inputHandleIndex: number,
+            outputHandleIndex: number,
+            propertyTag: { propertyId: number; propertyType: PropertyType },
+            openModeFlags: number,
+        ): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x2b);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(outputHandleIndex);
+            writePropertyTag(writer, propertyTag);
+            writer.writeUInt8(openModeFlags);
+            return writer.toBuffer();
+        };
+
+        const buildWriteStreamRops = function (inputHandleIndex: number, data: Buffer): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x2d);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt16LE(data.length);
+            writer.writeBytes(data);
+            return writer.toBuffer();
+        };
+
+        const buildSaveChangesMessageRops = function (responseHandleIndex: number, inputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x0c);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(responseHandleIndex);
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(0); // SaveFlags
+            return writer.toBuffer();
+        };
+
+        const buildSubmitMessageRops = function (inputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x32);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(0); // SubmitFlags
+            return writer.toBuffer();
+        };
+
+        it("Composes and sends a real message end to end, saving a Sent Items copy.", async () => {
+            mailTransport().sent = [];
+            const mailbox = await createMailbox(owner.uid);
+            const connectResult = await connect();
+            const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+            // Logon (handle 0) - discover the Inbox FID (used only as RopCreateMessage's target folder; the
+            // actual saved copy always lands in Sent Items regardless, matching RopSubmitMessageHandler's own
+            // documented behavior).
+            const logonResult = await execute(cookie, encodeRopBuffer({ ropsList: buildLogonRops(0), handleTable: [0xffffffff] }));
+            const logonReader = new BufferReader(logonResult.body);
+            logonReader.readUInt32LE();
+            logonReader.readUInt32LE();
+            logonReader.readUInt32LE();
+            const { ropsList: logonRopsList } = decodeRopBuffer(logonReader.readBytes(logonReader.readUInt32LE()));
+            const logonRopsReader = new BufferReader(logonRopsList);
+            logonRopsReader.readUInt8();
+            logonRopsReader.readUInt8();
+            logonRopsReader.readUInt32LE();
+            logonRopsReader.readUInt8();
+            logonRopsReader.readBigUInt64LE(); // Root
+            logonRopsReader.readBigUInt64LE(); // Deferred Action
+            logonRopsReader.readBigUInt64LE(); // Spooler Queue
+            logonRopsReader.readBigUInt64LE(); // IPM Subtree
+            const inboxFid = logonRopsReader.readBigUInt64LE(); // Inbox
+
+            // RopCreateMessage at handle 3.
+            const createMessageResult = await execute(
+                cookie,
+                encodeRopBuffer({ ropsList: buildCreateMessageRops(0, 3, inboxFid), handleTable: [0xffffffff, 0xffffffff] }),
+            );
+            const createMessageReader = new BufferReader(createMessageResult.body);
+            createMessageReader.readUInt32LE();
+            createMessageReader.readUInt32LE();
+            createMessageReader.readUInt32LE();
+            const { ropsList: createMessageRopsList } = decodeRopBuffer(createMessageReader.readBytes(createMessageReader.readUInt32LE()));
+            const createMessageRopsReader = new BufferReader(createMessageRopsList);
+            createMessageRopsReader.readUInt8();
+            createMessageRopsReader.readUInt8();
+            expect(createMessageRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+            // RopSetProperties(Subject, DisplayTo) on message handle 3.
+            const setPropertiesInput = encodeRopBuffer({
+                ropsList: buildSetPropertiesRops(3, [
+                    { propertyId: 0x0037, propertyType: PropertyType.PtypString, value: "Hello From MAPI" },
+                    { propertyId: 0x0e04, propertyType: PropertyType.PtypString, value: "recipient@example.com" },
+                ]),
+                handleTable: [0xffffffff],
+            });
+            const setPropertiesResult = await execute(cookie, setPropertiesInput);
+            expect(setPropertiesResult.headers["x-responsecode"]).toBe("0");
+
+            // RopOpenStream(PidTagBody, Create) at handle 4, then RopWriteStream to set the body text.
+            const openStreamInput = encodeRopBuffer({
+                ropsList: buildOpenStreamRops(3, 4, { propertyId: 0x1000, propertyType: PropertyType.PtypString }, 0x02),
+                handleTable: [0xffffffff, 0xffffffff],
+            });
+            await execute(cookie, openStreamInput);
+
+            const bodyText = "This message was composed entirely via MAPI ROPs.";
+            const bodyBytes = Buffer.concat([Buffer.from(bodyText, "utf16le"), Buffer.from([0, 0])]);
+            const writeStreamInput = encodeRopBuffer({ ropsList: buildWriteStreamRops(4, bodyBytes), handleTable: [0xffffffff] });
+            const writeStreamResult = await execute(cookie, writeStreamInput);
+            const writeStreamReader = new BufferReader(writeStreamResult.body);
+            writeStreamReader.readUInt32LE();
+            writeStreamReader.readUInt32LE();
+            writeStreamReader.readUInt32LE();
+            const { ropsList: writeStreamRopsList } = decodeRopBuffer(writeStreamReader.readBytes(writeStreamReader.readUInt32LE()));
+            const writeStreamRopsReader = new BufferReader(writeStreamRopsList);
+            writeStreamRopsReader.readUInt8();
+            writeStreamRopsReader.readUInt8();
+            expect(writeStreamRopsReader.readUInt32LE()).toBe(0); // ReturnValue
+            expect(writeStreamRopsReader.readUInt16LE()).toBe(bodyBytes.length); // WrittenSize
+
+            // RopSaveChangesMessage at response handle 7, on message handle 3.
+            const saveChangesInput = encodeRopBuffer({ ropsList: buildSaveChangesMessageRops(7, 3), handleTable: [0xffffffff] });
+            const saveChangesResult = await execute(cookie, saveChangesInput);
+            const saveChangesReader = new BufferReader(saveChangesResult.body);
+            saveChangesReader.readUInt32LE();
+            saveChangesReader.readUInt32LE();
+            saveChangesReader.readUInt32LE();
+            const { ropsList: saveChangesRopsList } = decodeRopBuffer(saveChangesReader.readBytes(saveChangesReader.readUInt32LE()));
+            const saveChangesRopsReader = new BufferReader(saveChangesRopsList);
+            saveChangesRopsReader.readUInt8();
+            saveChangesRopsReader.readUInt8();
+            expect(saveChangesRopsReader.readUInt32LE()).toBe(0); // ReturnValue
+
+            // RopSubmitMessage on message handle 3 - the real send trigger.
+            const submitInput = encodeRopBuffer({ ropsList: buildSubmitMessageRops(3), handleTable: [0xffffffff] });
+            const submitResult = await execute(cookie, submitInput);
+            const submitReader = new BufferReader(submitResult.body);
+            submitReader.readUInt32LE();
+            submitReader.readUInt32LE();
+            submitReader.readUInt32LE();
+            const { ropsList: submitRopsList } = decodeRopBuffer(submitReader.readBytes(submitReader.readUInt32LE()));
+            const submitRopsReader = new BufferReader(submitRopsList);
+            submitRopsReader.readUInt8();
+            submitRopsReader.readUInt8();
+            expect(submitRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+            expect(mailTransport().sent.length).toBe(1);
+            expect(mailTransport().sent[0].envelopeFrom).toBe(mailbox.primarySmtpAddress);
+            expect(mailTransport().sent[0].envelopeTo).toEqual(["recipient@example.com"]);
+            expect(mailTransport().sent[0].raw.toString("utf-8")).toContain("Hello From MAPI");
+
+            const sentMessages = await messageRepo.find({ subject: "Hello From MAPI" }).toArray();
+            expect(sentMessages.length).toBe(1);
+            expect(sentMessages[0].recipients).toEqual([{ address: "recipient@example.com", type: RecipientType.TO }]);
+            const savedRaw = await blobStore().get(sentMessages[0].bodyBlobKey);
+            expect(savedRaw.toString("utf-8")).toContain(bodyText);
         });
     });
 

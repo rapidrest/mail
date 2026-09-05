@@ -19,6 +19,7 @@ import { dispatchRops } from "./RopDispatcher.js";
 import type { RopContext, RopHandler } from "./rop/RopHandler.js";
 import { resolveCallerMailboxUid } from "../util/MailboxScopeUtils.js";
 import type { BlobStore } from "../blob/BlobStore.js";
+import { ScanPipeline } from "../scan/ScanPipeline.js";
 import { Folder, Mailbox } from "../models/types.js";
 const { Init, Inject, Logger } = ObjectDecorators;
 const { Auth, Post, Request, Response, User: AuthUser } = RouteDecorators;
@@ -89,6 +90,12 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     @Inject("BlobStore")
     private blobStore?: BlobStore;
 
+    @Inject(ScanPipeline)
+    private scanPipeline?: ScanPipeline;
+
+    @Inject("MailTransport")
+    private mailTransport?: any;
+
     @Logger
     private logger: any;
 
@@ -120,7 +127,15 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
         @Response res: HttpResponse,
         @AuthUser user?: JWTUser,
     ): Promise<void> {
-        if (!this.mailboxRepo || !this.folderRepo || !this.messageRepo || !this.sessionManager || !this.blobStore) {
+        if (
+            !this.mailboxRepo ||
+            !this.folderRepo ||
+            !this.messageRepo ||
+            !this.sessionManager ||
+            !this.blobStore ||
+            !this.scanPipeline ||
+            !this.mailTransport
+        ) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
         if (!user) {
@@ -227,9 +242,14 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             mailboxUid: session.mailboxUid,
             userUid: session.userUid,
             session,
+            mailboxRepo: this.mailboxRepo!,
             folderRepo: this.folderRepo!,
             messageRepo: this.messageRepo!,
+            folderClass: this.folderClass,
+            messageClass: this.messageClass,
             blobStore: this.blobStore!,
+            scanPipeline: this.scanPipeline!,
+            mailTransport: this.mailTransport!,
         };
         const responseRopsList: Buffer = await dispatchRops(ropsList, this.ropHandlers, context);
         const responseRopBuffer: Buffer = encodeRopBuffer({ ropsList: responseRopsList, handleTable });

@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Isolated unit tests for BaseMapiEmsmdbRoute, reserved for the defensive guard branches a real wired server
 // can never exercise (`!this.mailboxRepo || !this.folderRepo || !this.messageRepo || !this.sessionManager ||
-// !this.blobStore` - DI always populates all five before a request can reach a route - and `!user`, a second
-// defensive check behind `@Auth(["jwt"])` itself) - the same rationale test/routes/BaseEasRoute.test.ts already
-// uses for its own identical guards. Every other behavior is exercised via real HTTP+DB requests in
-// test/routes/mongo/MapiEmsmdbRoute.test.ts (and its sql/ counterpart).
+// !this.blobStore || !this.scanPipeline || !this.mailTransport` - DI always populates all seven before a
+// request can reach a route - and `!user`, a second defensive check behind `@Auth(["jwt"])` itself) - the same
+// rationale test/routes/BaseEasRoute.test.ts already uses for its own identical guards. Every other behavior is
+// exercised via real HTTP+DB requests in test/routes/mongo/MapiEmsmdbRoute.test.ts (and its sql/ counterpart).
 import config from "../config.js";
 import { ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
@@ -39,8 +39,8 @@ describe("BaseMapiEmsmdbRoute Tests (guard clauses only)", () => {
         vi.restoreAllMocks();
     });
 
-    it("dispatch() throws INTERNAL_ERROR when mailboxRepo/folderRepo/messageRepo/sessionManager/blobStore are not set.", async () => {
-        // `initialize: false` skips `@Init`, leaving all five genuinely `undefined` - exactly what this
+    it("dispatch() throws INTERNAL_ERROR when mailboxRepo/folderRepo/messageRepo/sessionManager/blobStore/scanPipeline/mailTransport are not set.", async () => {
+        // `initialize: false` skips `@Init`, leaving all seven genuinely `undefined` - exactly what this
         // guard clause exists to catch.
         const route = objectFactory.newInstance<TestMapiEmsmdbRoute>(TestMapiEmsmdbRoute, { initialize: false });
 
@@ -58,6 +58,8 @@ describe("BaseMapiEmsmdbRoute Tests (guard clauses only)", () => {
         (route as any).messageRepo = {};
         (route as any).sessionManager = {};
         (route as any).blobStore = {};
+        (route as any).scanPipeline = {};
+        (route as any).mailTransport = {};
 
         await expect(route.dispatch(makeReq(), makeRes(), undefined)).rejects.toThrow(/permission/i);
     });

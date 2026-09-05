@@ -20,7 +20,7 @@ function buildRequest({ logonId = 0, inputHandleIndex = 7, queryRowsFlags = 0, f
 
 function makeContext(folderRepo: any, messageRepo: any = {}): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo, messageRepo, blobStore: {} as any };
+    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo, messageRepo, mailboxRepo: {} as any, folderClass: {} as any, messageClass: {} as any, scanPipeline: {} as any, mailTransport: {} as any, blobStore: {} as any };
 }
 
 describe("RopQueryRowsHandler Tests", () => {
@@ -41,9 +41,9 @@ describe("RopQueryRowsHandler Tests", () => {
         expect(response.readUInt32LE()).toBe(0x80070005);
     });
 
-    it("Returns a well-formed empty response for a table with no rows.", async () => {
+    it("Returns a well-formed empty response for a table with no rows (rows/cursor/columns all defaulted).", async () => {
         const context = makeContext({});
-        context.session.handles[7] = { type: "table", entityUid: "virtual:root", rows: [], cursor: 0, columns: [] };
+        context.session.handles[7] = { type: "table", entityUid: "virtual:root" };
         const handler = new RopQueryRowsHandler();
         const writer = new BufferWriter();
 
@@ -58,9 +58,9 @@ describe("RopQueryRowsHandler Tests", () => {
         expect(response.hasMore()).toBe(false);
     });
 
-    it("Defaults rows/cursor/columns to empty when a table handle was constructed without them.", async () => {
-        const context = makeContext({});
-        context.session.handles[7] = { type: "table", entityUid: "virtual:root" };
+    it("Defaults cursor/columns to empty when a table handle was constructed without them.", async () => {
+        const context = makeContext({ findOne: vi.fn().mockResolvedValue(undefined), find: vi.fn().mockResolvedValue([]) });
+        context.session.handles[7] = { type: "table", entityUid: "virtual:root", rows: ["virtual:root"] };
         const handler = new RopQueryRowsHandler();
         const writer = new BufferWriter();
 
@@ -71,9 +71,10 @@ describe("RopQueryRowsHandler Tests", () => {
         response.readUInt8();
         expect(response.readUInt32LE()).toBe(0);
         response.readUInt8();
-        expect(response.readUInt16LE()).toBe(0); // RowCount
+        expect(response.readUInt16LE()).toBe(1); // RowCount - the one row this table was constructed with
+        response.readUInt8(); // PropertyRow Flags - no columns configured, so the row has no property values
         expect(response.hasMore()).toBe(false);
-        expect(context.session.handles[7]?.cursor).toBe(0);
+        expect(context.session.handles[7]?.cursor).toBe(1);
     });
 
     it("Builds rows with DisplayName/FolderId/ContentCount/UnreadCount/Subfolders columns and advances the cursor.", async () => {

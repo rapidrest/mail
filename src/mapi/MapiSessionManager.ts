@@ -19,7 +19,20 @@ const SESSION_TTL_SECONDS = 15 * 60;
  * property list, `cursor` how many rows `RopQueryRows` has already returned. A `"stream"` handle's `entityUid`
  * is the `"message:<uid>"` target its content was opened from, `propertyId`/`propertyType` the `PropertyTag`
  * `RopOpenStream` opened (this pragmatic subset only ever supports `PidTagBody`/`PtypString`, see
- * `MessageBodyStream.ts`), and `streamPosition` how many bytes `RopReadStream` has already returned. */
+ * `MessageBodyStream.ts`), and `streamPosition` how many bytes `RopReadStream` has already returned (a
+ * read-mode stream) or `writeTargetHandleIndex`/`writeBufferBase64` the accumulated write state (a write-mode
+ * stream opened `ReadWrite`/`Create` against a `RopCreateMessage` draft's `PidTagBody` - see
+ * `RopOpenStreamHandler`'s own doc comment).
+ *
+ * A `"message"` handle from `RopCreateMessage` (a draft not yet `RopSaveChangesMessage`d) has `entityUid: ""`
+ * and instead carries `draftFolderUid` (the folder it will belong to) and `draftProperties` (the small,
+ * well-known set of properties this pragmatic subset's `RopSetProperties` tracks - Subject/DisplayTo/
+ * DisplayCc/DisplayBcc/an inline `PidTagBody`, each coerced to a plain string, keyed by decimal `PropertyId` -
+ * a string key because a JSON-object key is always a string regardless of how it's written). `writeBufferBase64`
+ * stores accumulated `RopWriteStream` bytes as base64 rather than a raw `Buffer` for the same reason `Date`
+ * fields elsewhere in this class are stored as ISO strings: `RedisCache`'s Redis-backed path round-trips
+ * everything through `JSON.stringify`/`JSON.parse`, which cannot represent a `Buffer` (or a `bigint`, which is
+ * why no property value is ever stored in its native decoded MAPI type here) losslessly. */
 export interface MapiObjectHandle {
     type: "logon" | "folder" | "message" | "table" | "stream";
     entityUid: string;
@@ -29,6 +42,10 @@ export interface MapiObjectHandle {
     propertyId?: number;
     propertyType?: number;
     streamPosition?: number;
+    draftFolderUid?: string;
+    draftProperties?: Record<string, string>;
+    writeTargetHandleIndex?: number;
+    writeBufferBase64?: string;
 }
 
 /**

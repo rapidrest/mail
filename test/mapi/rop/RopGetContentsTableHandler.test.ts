@@ -36,6 +36,11 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: messageRepo as any,
+            mailboxRepo: {} as any,
+            folderClass: {} as any,
+            messageClass: {} as any,
+            scanPipeline: {} as any,
+            mailTransport: {} as any,
             blobStore: {} as any,
         };
 
@@ -68,6 +73,11 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: messageRepo as any,
+            mailboxRepo: {} as any,
+            folderClass: {} as any,
+            messageClass: {} as any,
+            scanPipeline: {} as any,
+            mailTransport: {} as any,
             blobStore: {} as any,
         };
 
@@ -87,6 +97,11 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: {} as any,
+            mailboxRepo: {} as any,
+            folderClass: {} as any,
+            messageClass: {} as any,
+            scanPipeline: {} as any,
+            mailTransport: {} as any,
             blobStore: {} as any,
         };
         const handler = new RopGetContentsTableHandler();

@@ -32,6 +32,11 @@ async function makeContext(): Promise<RopContext> {
         session,
         folderRepo: {} as any,
         messageRepo: { findOne: vi.fn().mockResolvedValue({ uid: "m1", bodyBlobKey: "bodies/m1" }) } as any,
+        mailboxRepo: {} as any,
+        folderClass: {} as any,
+        messageClass: {} as any,
+        scanPipeline: {} as any,
+        mailTransport: {} as any,
         blobStore,
     };
 }

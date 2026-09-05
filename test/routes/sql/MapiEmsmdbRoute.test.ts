@@ -13,11 +13,11 @@ import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
 import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
 import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
-import { InMemoryBlobStore, registerTestDoubles } from "../../testDoubles.js";
+import { InMemoryBlobStore, RecordingMailTransport, registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
 import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
-import { PropertyType, readPropertyValue, writePropertyTag } from "../../../src/mapi/codec/PropertyValue.js";
+import { PropertyType, readPropertyValue, writePropertyTag, writeTaggedPropertyValue } from "../../../src/mapi/codec/PropertyValue.js";
 import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
 describe("Route:MapiEmsmdbRouteSQL Tests", () => {
@@ -106,6 +106,10 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
 
     const blobStore = function (): InMemoryBlobStore {
         return objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
+    };
+
+    const mailTransport = function (): RecordingMailTransport {
+        return objectFactory.getInstance<RecordingMailTransport>("MailTransport")!;
     };
 
     const connect = async function () {
@@ -607,5 +611,143 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
         const dataSize = readStreamRopsReader.readUInt16LE();
         expect(dataSize).toBe(streamSize);
         expect(readPropertyValue(readStreamRopsReader, PropertyType.PtypString)).toBe("Actual body text.");
+    });
+
+    it("Composes and sends a real message end to end, saving a Sent Items copy.", async () => {
+        mailTransport().sent = [];
+        const mailbox = await createMailbox(owner.uid);
+        const connectResult = await connect();
+        const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+        const logonRops = new BufferWriter();
+        logonRops.writeUInt8(0xfe);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0x01);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt16LE(0);
+        const logonResult = await execute(cookie, encodeRopBuffer({ ropsList: logonRops.toBuffer(), handleTable: [0xffffffff] }));
+        const logonReader = new BufferReader(logonResult.body);
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        const { ropsList: logonRopsList } = decodeRopBuffer(logonReader.readBytes(logonReader.readUInt32LE()));
+        const logonRopsReader = new BufferReader(logonRopsList);
+        logonRopsReader.readUInt8();
+        logonRopsReader.readUInt8();
+        logonRopsReader.readUInt32LE();
+        logonRopsReader.readUInt8();
+        logonRopsReader.readBigUInt64LE(); // Root
+        logonRopsReader.readBigUInt64LE(); // Deferred Action
+        logonRopsReader.readBigUInt64LE(); // Spooler Queue
+        logonRopsReader.readBigUInt64LE(); // IPM Subtree
+        const inboxFid = logonRopsReader.readBigUInt64LE(); // Inbox
+
+        const createMessageRops = new BufferWriter();
+        createMessageRops.writeUInt8(0x06);
+        createMessageRops.writeUInt8(0); // LogonId
+        createMessageRops.writeUInt8(0); // InputHandleIndex (logon)
+        createMessageRops.writeUInt8(3); // OutputHandleIndex
+        createMessageRops.writeUInt16LE(0); // CodePageId
+        createMessageRops.writeBigUInt64LE(inboxFid);
+        createMessageRops.writeUInt8(0); // AssociatedFlag
+        const createMessageResult = await execute(cookie, encodeRopBuffer({ ropsList: createMessageRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+        const createMessageReader = new BufferReader(createMessageResult.body);
+        createMessageReader.readUInt32LE();
+        createMessageReader.readUInt32LE();
+        createMessageReader.readUInt32LE();
+        const { ropsList: createMessageRopsList } = decodeRopBuffer(createMessageReader.readBytes(createMessageReader.readUInt32LE()));
+        const createMessageRopsReader = new BufferReader(createMessageRopsList);
+        createMessageRopsReader.readUInt8();
+        createMessageRopsReader.readUInt8();
+        expect(createMessageRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+        const propertyValues = new BufferWriter();
+        writeTaggedPropertyValue(propertyValues, { propertyId: 0x0037, propertyType: PropertyType.PtypString, value: "Hello From MAPI" });
+        writeTaggedPropertyValue(propertyValues, { propertyId: 0x0e04, propertyType: PropertyType.PtypString, value: "recipient@example.com" });
+        const propertyValuesBytes = propertyValues.toBuffer();
+        const setPropertiesRops = new BufferWriter();
+        setPropertiesRops.writeUInt8(0x0a);
+        setPropertiesRops.writeUInt8(0); // LogonId
+        setPropertiesRops.writeUInt8(3); // InputHandleIndex (message)
+        setPropertiesRops.writeUInt16LE(2 + propertyValuesBytes.length);
+        setPropertiesRops.writeUInt16LE(2); // PropertyValueCount
+        setPropertiesRops.writeBytes(propertyValuesBytes);
+        const setPropertiesResult = await execute(cookie, encodeRopBuffer({ ropsList: setPropertiesRops.toBuffer(), handleTable: [0xffffffff] }));
+        expect(setPropertiesResult.headers["x-responsecode"]).toBe("0");
+
+        const openStreamRops = new BufferWriter();
+        openStreamRops.writeUInt8(0x2b);
+        openStreamRops.writeUInt8(0); // LogonId
+        openStreamRops.writeUInt8(3); // InputHandleIndex (message)
+        openStreamRops.writeUInt8(4); // OutputHandleIndex
+        writePropertyTag(openStreamRops, { propertyId: 0x1000, propertyType: PropertyType.PtypString });
+        openStreamRops.writeUInt8(0x02); // OpenModeFlags - Create
+        await execute(cookie, encodeRopBuffer({ ropsList: openStreamRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+
+        const bodyText = "This message was composed entirely via MAPI ROPs.";
+        const bodyBytes = Buffer.concat([Buffer.from(bodyText, "utf16le"), Buffer.from([0, 0])]);
+        const writeStreamRops = new BufferWriter();
+        writeStreamRops.writeUInt8(0x2d);
+        writeStreamRops.writeUInt8(0); // LogonId
+        writeStreamRops.writeUInt8(4); // InputHandleIndex (stream)
+        writeStreamRops.writeUInt16LE(bodyBytes.length);
+        writeStreamRops.writeBytes(bodyBytes);
+        const writeStreamResult = await execute(cookie, encodeRopBuffer({ ropsList: writeStreamRops.toBuffer(), handleTable: [0xffffffff] }));
+        const writeStreamReader = new BufferReader(writeStreamResult.body);
+        writeStreamReader.readUInt32LE();
+        writeStreamReader.readUInt32LE();
+        writeStreamReader.readUInt32LE();
+        const { ropsList: writeStreamRopsList } = decodeRopBuffer(writeStreamReader.readBytes(writeStreamReader.readUInt32LE()));
+        const writeStreamRopsReader = new BufferReader(writeStreamRopsList);
+        writeStreamRopsReader.readUInt8();
+        writeStreamRopsReader.readUInt8();
+        expect(writeStreamRopsReader.readUInt32LE()).toBe(0);
+        expect(writeStreamRopsReader.readUInt16LE()).toBe(bodyBytes.length);
+
+        const saveChangesRops = new BufferWriter();
+        saveChangesRops.writeUInt8(0x0c);
+        saveChangesRops.writeUInt8(0); // LogonId
+        saveChangesRops.writeUInt8(7); // ResponseHandleIndex
+        saveChangesRops.writeUInt8(3); // InputHandleIndex (message)
+        saveChangesRops.writeUInt8(0); // SaveFlags
+        const saveChangesResult = await execute(cookie, encodeRopBuffer({ ropsList: saveChangesRops.toBuffer(), handleTable: [0xffffffff] }));
+        const saveChangesReader = new BufferReader(saveChangesResult.body);
+        saveChangesReader.readUInt32LE();
+        saveChangesReader.readUInt32LE();
+        saveChangesReader.readUInt32LE();
+        const { ropsList: saveChangesRopsList } = decodeRopBuffer(saveChangesReader.readBytes(saveChangesReader.readUInt32LE()));
+        const saveChangesRopsReader = new BufferReader(saveChangesRopsList);
+        saveChangesRopsReader.readUInt8();
+        saveChangesRopsReader.readUInt8();
+        expect(saveChangesRopsReader.readUInt32LE()).toBe(0);
+
+        const submitRops = new BufferWriter();
+        submitRops.writeUInt8(0x32);
+        submitRops.writeUInt8(0); // LogonId
+        submitRops.writeUInt8(3); // InputHandleIndex (message)
+        submitRops.writeUInt8(0); // SubmitFlags
+        const submitResult = await execute(cookie, encodeRopBuffer({ ropsList: submitRops.toBuffer(), handleTable: [0xffffffff] }));
+        const submitReader = new BufferReader(submitResult.body);
+        submitReader.readUInt32LE();
+        submitReader.readUInt32LE();
+        submitReader.readUInt32LE();
+        const { ropsList: submitRopsList } = decodeRopBuffer(submitReader.readBytes(submitReader.readUInt32LE()));
+        const submitRopsReader = new BufferReader(submitRopsList);
+        submitRopsReader.readUInt8();
+        submitRopsReader.readUInt8();
+        expect(submitRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+        expect(mailTransport().sent.length).toBe(1);
+        expect(mailTransport().sent[0].envelopeFrom).toBe(mailbox.primarySmtpAddress);
+        expect(mailTransport().sent[0].envelopeTo).toEqual(["recipient@example.com"]);
+        expect(mailTransport().sent[0].raw.toString("utf-8")).toContain("Hello From MAPI");
+
+        const sentMessage = await messageRepo.findOne({ where: { subject: "Hello From MAPI" } });
+        expect(sentMessage).not.toBeNull();
+        expect(sentMessage?.recipients).toEqual([{ address: "recipient@example.com", type: RecipientType.TO }]);
+        const savedRaw = await blobStore().get(sentMessage!.bodyBlobKey);
+        expect(savedRaw.toString("utf-8")).toContain(bodyText);
     });
 });

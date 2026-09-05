@@ -36,6 +36,11 @@ async function makeContext(): Promise<RopContext> {
         session,
         folderRepo: {} as any,
         messageRepo: { findOne: vi.fn().mockResolvedValue({ uid: "m1", bodyBlobKey: "bodies/m1" }) } as any,
+        mailboxRepo: {} as any,
+        folderClass: {} as any,
+        messageClass: {} as any,
+        scanPipeline: {} as any,
+        mailTransport: {} as any,
         blobStore,
     };
 }
@@ -67,6 +72,41 @@ describe("RopOpenStreamHandler Tests", () => {
             propertyType: PropertyType.PtypString,
             streamPosition: 0,
         });
+    });
+
+    it("Opens PidTagBody in Create (write) mode against a fresh draft message handle, StreamSize always 0.", async () => {
+        const context = await makeContext();
+        context.session.handles[5] = { type: "message", entityUid: "", draftFolderUid: "folder:f1", draftProperties: {} };
+        const handler = new RopOpenStreamHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({ openModeFlags: 0x02 })), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        expect(response.readUInt8()).toBe(0x2b);
+        expect(response.readUInt8()).toBe(6);
+        expect(response.readUInt32LE()).toBe(0);
+        expect(response.readUInt32LE()).toBe(0); // StreamSize - always 0 for a write-mode open
+        expect(response.hasMore()).toBe(false);
+
+        expect(context.session.handles[6]).toEqual({
+            type: "stream",
+            entityUid: "",
+            propertyId: 0x1000,
+            propertyType: PropertyType.PtypString,
+            writeTargetHandleIndex: 5,
+            writeBufferBase64: "",
+        });
+    });
+
+    it("Also opens write-mode for ReadWrite (0x01), not just Create.", async () => {
+        const context = await makeContext();
+        const handler = new RopOpenStreamHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({ openModeFlags: 0x01 })), writer, context);
+
+        expect(context.session.handles[6]?.writeTargetHandleIndex).toBe(5);
     });
 
     it("Returns MAPI_E_NOT_FOUND for an unsupported property tag.", async () => {

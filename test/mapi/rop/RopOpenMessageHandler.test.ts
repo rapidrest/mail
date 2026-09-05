@@ -31,7 +31,7 @@ function buildRequest({
 function makeContext(messageIds: Record<string, string>, messageRepo: any = {}): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
     session.messageIds = messageIds;
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo, blobStore: {} as any };
+    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo, mailboxRepo: {} as any, folderClass: {} as any, messageClass: {} as any, scanPipeline: {} as any, mailTransport: {} as any, blobStore: {} as any };
 }
 
 describe("RopOpenMessageHandler Tests", () => {

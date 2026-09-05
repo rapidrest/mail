@@ -45,6 +45,12 @@ export interface TypedPropertyValue {
     value: PropertyValueData;
 }
 
+export interface TaggedPropertyValue {
+    propertyId: number;
+    propertyType: PropertyType;
+    value: PropertyValueData;
+}
+
 export type PropertyValueData = number | bigint | boolean | string | Buffer | Date | string[] | number[] | Buffer[];
 
 /**
@@ -76,6 +82,21 @@ export function readTypedPropertyValue(reader: BufferReader): TypedPropertyValue
 export function writeTypedPropertyValue(writer: BufferWriter, typed: TypedPropertyValue): void {
     writer.writeUInt16LE(typed.propertyType);
     writePropertyValue(writer, typed.propertyType, typed.value);
+}
+
+/** `TaggedPropertyValue` structure (`[MS-OXCDATA]` §2.11.4, confirmed via `RopSetProperties`'s own request-buffer
+ * page): a full `PropertyTag` (4 bytes - `PropertyId` **and** `PropertyType`, unlike `TypedPropertyValue`'s bare
+ * `PropertyType`) followed by the value itself. Used where a property's identity can't be inferred from
+ * context (e.g. `RopSetProperties`, which sets an arbitrary, client-chosen set of properties in one call). */
+export function readTaggedPropertyValue(reader: BufferReader): TaggedPropertyValue {
+    const tag = readPropertyTag(reader);
+    const value = readPropertyValue(reader, tag.propertyType);
+    return { propertyId: tag.propertyId, propertyType: tag.propertyType, value };
+}
+
+export function writeTaggedPropertyValue(writer: BufferWriter, tagged: TaggedPropertyValue): void {
+    writePropertyTag(writer, { propertyId: tagged.propertyId, propertyType: tagged.propertyType });
+    writePropertyValue(writer, tagged.propertyType, tagged.value);
 }
 
 /**
