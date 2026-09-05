@@ -2,7 +2,5 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-export * from "./models/mongo.js";
-export * from "./routes/mongo.js";
-export * from "./jobs/mongo.js";
-export * from "./eas/mongo.js";
+export * from "./EasRouteSQL.js";
+export * from "../commands/sql/index.js";

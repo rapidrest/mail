@@ -15,9 +15,17 @@ webmail) ever speaks SMTP/IMAP/POP to this library directly.
 
 ## Status
 
-This library is under active development. The current focus (Phase 1) is the core data model, the standard
-RapidREST CRUD API, mail ingestion/scanning/search. Exchange ActiveSync (Phase 2) and MAPI over HTTP (Phase 3)
-have not been implemented yet.
+This library is under active development. Phase 1 (the core data model, the standard RapidREST CRUD API, mail
+ingestion/scanning/search) and Phase 2 (Exchange ActiveSync) are complete. MAPI over HTTP (Phase 3) has not
+been implemented yet.
+
+Exchange ActiveSync support (`@rapidrest/mail/eas`) covers the pragmatic command subset a real mobile client
+(iOS Mail, Outlook mobile, Android/Samsung Mail) needs for day-to-day use: `Provision`, `FolderSync`, `Sync`
+(`Email`/`Contacts`/`Calendar`/`Tasks`), `SendMail`/`SmartForward`/`SmartReply`, `ItemOperations`, `Ping`,
+`Search` (GAL), `MeetingResponse`, and `Settings`. It authenticates with the same JWT the rest of this library's
+routes already use — no separate EAS-specific login flow — which means a real native device (rather than a
+test client that already has a token) needs an OAuth 2.0 Authorization Server role in front of it to obtain
+one; that piece is tracked as a follow-up in `@rapidrest/auth`, not this library.
 
 ## Usage
 
@@ -32,3 +40,15 @@ Register a `BlobStore`, `SearchProvider`, `SpamScanProvider`, `AvScanProvider`, 
 implementation with your application's dependency injection container before starting the server — see
 `src/blob/BlobStore.ts`, `src/search/SearchProvider.ts`, `src/scan/SpamScanProvider.ts`/`AvScanProvider.ts`,
 and `src/transport/MailTransport.ts` for the interfaces and their default implementations.
+
+To also serve Exchange ActiveSync, mount `EasRouteMongo`/`EasRouteSQL` at the protocol's well-known path with a
+one-line subclass:
+
+```ts
+import { EasRouteMongo } from "@rapidrest/mail/mongo";
+import { RouteDecorators } from "@rapidrest/service-core";
+const { Route } = RouteDecorators;
+
+@Route("/Microsoft-Server-ActiveSync")
+export class MyEasRoute extends EasRouteMongo {}
+```
