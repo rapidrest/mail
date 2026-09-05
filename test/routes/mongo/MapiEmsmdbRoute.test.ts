@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 // These tests prove BaseMapiEmsmdbRoute's transport plumbing (JWT auth, mailbox resolution, session-cookie
-// establishment/teardown, the Execute envelope + RopBuffer framing round trip) over a real HTTP round trip -
-// see the architecture plan's "Phase 3" section, build-order step 3. No real ROP handlers exist yet (that
-// starts step 4), so Execute is only proven to echo back an empty, well-formed ROP buffer.
+// establishment/teardown, the Execute envelope + RopBuffer framing round trip) AND the RopLogon/RopRelease
+// ROPs' real behavior, all over a real HTTP round trip - see the architecture plan's "Phase 3" section,
+// build-order steps 3-4.
 //
 // Uses `mapiTestClient.ts`'s raw-socket `mapiRequest()` instead of the shared `@rapidrest/service-core/test`
 // `request()` helper - see that file's doc comment for why (the shared helper's axios `responseType: "text"`
@@ -19,7 +19,8 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
-import { encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
+import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
+import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
 const mongod: MongoMemoryServer = new MongoMemoryServer({
     instance: {
@@ -221,6 +222,89 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
             expect(responseRopBuffer.readUInt32LE(2)).toBe(7);
             expect(responseRopBuffer.readUInt32LE(6)).toBe(9);
             expect(reader.readUInt32LE()).toBe(0); // AuxiliaryBufferSize
+        });
+    });
+
+    describe("RopLogon / RopRelease", () => {
+        const buildRopLogonRops = function (outputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0xfe); // RopId
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(outputHandleIndex);
+            writer.writeUInt8(0x01); // LogonFlags (Private)
+            writer.writeUInt32LE(0); // OpenFlags
+            writer.writeUInt32LE(0); // StoreState
+            writer.writeUInt16LE(0); // EssdnSize
+            return writer.toBuffer();
+        };
+
+        const buildRopReleaseRops = function (inputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x01); // RopId
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            return writer.toBuffer();
+        };
+
+        it("Logs on to a real mailbox and returns 13 well-formed, distinct FIDs.", async () => {
+            const mailbox = await createMailbox(owner.uid, { displayName: "Ada Lovelace" });
+            const connectResult = await connect();
+            const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+            const inputRop = encodeRopBuffer({ ropsList: buildRopLogonRops(0), handleTable: [0xffffffff] });
+            const result = await execute(cookie, inputRop);
+
+            expect(result.status).toBe(200);
+            expect(result.headers["x-responsecode"]).toBe("0");
+            const reader = new BufferReader(result.body);
+            reader.readUInt32LE(); // StatusCode
+            reader.readUInt32LE(); // ErrorCode
+            reader.readUInt32LE(); // Flags
+            const ropBufferSize = reader.readUInt32LE();
+            const { ropsList, handleTable } = decodeRopBuffer(reader.readBytes(ropBufferSize));
+            expect(handleTable).toEqual([0xffffffff]);
+
+            const ropsReader = new BufferReader(ropsList);
+            expect(ropsReader.readUInt8()).toBe(0xfe); // RopId
+            expect(ropsReader.readUInt8()).toBe(0); // OutputHandleIndex
+            expect(ropsReader.readUInt32LE()).toBe(0); // ReturnValue
+            expect(ropsReader.readUInt8()).toBe(0x01); // LogonFlags, echoed
+
+            const fids: bigint[] = [];
+            for (let i = 0; i < 13; i++) {
+                fids.push(ropsReader.readBigUInt64LE());
+            }
+            expect(new Set(fids).size).toBe(13); // all 13 FIDs are distinct
+
+            ropsReader.readUInt8(); // ResponseFlags
+            expect(decodeGuid(ropsReader)).toBe(mailbox.uid); // MailboxGuid
+            expect(ropsReader.hasMore()).toBe(true); // ReplId/ReplGuid/LogonTime/GwartTime/StoreState follow
+            // The FID<->Folder mapping itself (Inbox/Outbox/Sent/Deleted resolving to a real Folder when one
+            // exists) is verified directly against session.folderIds in RopLogonHandler's own unit tests
+            // (test/mapi/rop/RopLogonHandler.test.ts) - not observable from outside this black-box HTTP test,
+            // since FIDs are opaque numbers to the client until a later RopOpenFolder (a future build step).
+        });
+
+        it("Releases a logon handle with no response bytes for that ROP, matching the spec's own captured example.", async () => {
+            await createMailbox(owner.uid);
+            const connectResult = await connect();
+            const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+            const logonRop = encodeRopBuffer({ ropsList: buildRopLogonRops(0), handleTable: [0xffffffff] });
+            await execute(cookie, logonRop);
+
+            const releaseRop = encodeRopBuffer({ ropsList: buildRopReleaseRops(0), handleTable: [0] });
+            const result = await execute(cookie, releaseRop);
+
+            expect(result.headers["x-responsecode"]).toBe("0");
+            const reader = new BufferReader(result.body);
+            reader.readUInt32LE(); // StatusCode
+            reader.readUInt32LE(); // ErrorCode
+            reader.readUInt32LE(); // Flags
+            const ropBufferSize = reader.readUInt32LE();
+            const { ropsList } = decodeRopBuffer(reader.readBytes(ropBufferSize));
+            // RopRelease produces no response entry - the entire ropsList is empty.
+            expect(ropsList.length).toBe(0);
         });
     });
 

@@ -13,7 +13,8 @@ import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
-import { encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
+import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
+import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
 describe("Route:MapiEmsmdbRouteSQL Tests", () => {
     const logger = Logger();
@@ -144,5 +145,64 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
         const responseRopBuffer = reader.readBytes(responseRopBufferSize);
         expect(responseRopBuffer.readUInt16LE(0)).toBe(2);
         expect(responseRopBuffer.readUInt32LE(2)).toBe(42);
+    });
+
+    it("Logs on to a real mailbox and returns 13 well-formed, distinct FIDs.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const connectResult = await connect();
+        const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+        const logonRops = new BufferWriter();
+        logonRops.writeUInt8(0xfe); // RopId
+        logonRops.writeUInt8(0); // LogonId
+        logonRops.writeUInt8(0); // OutputHandleIndex
+        logonRops.writeUInt8(0x01); // LogonFlags (Private)
+        logonRops.writeUInt32LE(0); // OpenFlags
+        logonRops.writeUInt32LE(0); // StoreState
+        logonRops.writeUInt16LE(0); // EssdnSize
+        const inputRop = encodeRopBuffer({ ropsList: logonRops.toBuffer(), handleTable: [0xffffffff] });
+
+        const requestBody = new BufferWriter();
+        requestBody.writeUInt32LE(0);
+        requestBody.writeUInt32LE(inputRop.length);
+        requestBody.writeBytes(inputRop);
+        requestBody.writeUInt32LE(256 * 1024);
+        requestBody.writeUInt32LE(0);
+
+        const result = await mapiRequest(
+            server.getApplication(),
+            baseUrl,
+            {
+                Authorization: "jwt " + ownerToken,
+                "X-RequestType": "Execute",
+                "Content-Type": "application/mapi-http",
+                Cookie: cookie,
+            },
+            requestBody.toBuffer(),
+        );
+
+        expect(result.status).toBe(200);
+        expect(result.headers["x-responsecode"]).toBe("0");
+        const reader = new BufferReader(result.body);
+        reader.readUInt32LE(); // StatusCode
+        reader.readUInt32LE(); // ErrorCode
+        reader.readUInt32LE(); // Flags
+        const ropBufferSize = reader.readUInt32LE();
+        const { ropsList } = decodeRopBuffer(reader.readBytes(ropBufferSize));
+
+        const ropsReader = new BufferReader(ropsList);
+        expect(ropsReader.readUInt8()).toBe(0xfe); // RopId
+        expect(ropsReader.readUInt8()).toBe(0); // OutputHandleIndex
+        expect(ropsReader.readUInt32LE()).toBe(0); // ReturnValue
+        expect(ropsReader.readUInt8()).toBe(0x01); // LogonFlags, echoed
+
+        const fids: bigint[] = [];
+        for (let i = 0; i < 13; i++) {
+            fids.push(ropsReader.readBigUInt64LE());
+        }
+        expect(new Set(fids).size).toBe(13);
+
+        ropsReader.readUInt8(); // ResponseFlags
+        expect(decodeGuid(ropsReader)).toBe(mailbox.uid); // MailboxGuid
     });
 });

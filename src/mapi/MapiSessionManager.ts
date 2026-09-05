@@ -37,6 +37,10 @@ export class MapiSessionContext extends SimpleEntity {
     public handles: Record<number, MapiObjectHandle> = {};
     public nextHandleIndex = 1;
     public createdAt: string = new Date().toISOString();
+    /** This session's FID assignments for the 13 `RopLogon` special folders, keyed by FID (decimal string),
+     * valued `"virtual:<name>"` or `"folder:<uid>"` - see `RopLogonHandler`'s own doc comment. Populated by
+     * `RopLogon`, read back by a later `RopOpenFolder`. */
+    public folderIds: Record<string, string> = {};
 
     /** `mailboxUid`/`userUid` are always known at construction time (the only call site is
      * `MapiSessionManager.create()`, which resolves both up front) - required here rather than optional with

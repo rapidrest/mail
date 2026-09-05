@@ -15,8 +15,10 @@ import {
 import { BufferReader, BufferWriter } from "./codec/BufferCursor.js";
 import { decodeRopBuffer, encodeRopBuffer } from "./codec/RopBuffer.js";
 import { MapiSessionContext, MapiSessionManager } from "./MapiSessionManager.js";
+import { dispatchRops } from "./RopDispatcher.js";
+import type { RopContext, RopHandler } from "./rop/RopHandler.js";
 import { resolveCallerMailboxUid } from "../util/MailboxScopeUtils.js";
-import { Mailbox } from "../models/types.js";
+import { Folder, Mailbox } from "../models/types.js";
 const { Init, Logger } = ObjectDecorators;
 const { Auth, Post, Request, Response, User: AuthUser } = RouteDecorators;
 
@@ -43,13 +45,13 @@ function firstHeader(req: HttpRequest, name: string): string | undefined {
  * alongside `NTLM`/`Negotiate`, so Bearer-token auth on this exact endpoint is real current Exchange
  * behavior, not a deviation this library invents - see the architecture plan's "Auth" section.
  *
- * **This class is a transport skeleton only** (Phase 3, build-order step 3): `Connect` establishes a real
- * `MapiSessionContext` (via `MapiSessionManager`) and sets the two spec-fixed session cookies
- * (`MapiContext`/`MapiSequence`); `Execute` decodes the outer `Execute` request envelope and the inner ROP
- * buffer framing, but - since no ROP handlers are registered yet - always answers with an honestly empty ROP
- * buffer (the same "real, functional skeleton, no commands implemented yet" stance `BaseEasRoute`'s own
- * skeleton step took, before `ProvisionCommand` etc. landed); `Disconnect` releases the session. Real ROP
- * dispatch lands in later build-order steps once `RopHandler` implementations exist.
+ * **Connect/Disconnect are complete**: `Connect` establishes a real `MapiSessionContext` (via
+ * `MapiSessionManager`) and sets the two spec-fixed session cookies (`MapiContext`/`MapiSequence`);
+ * `Disconnect` releases the session. **`Execute` dispatches real ROPs** (starting with `RopLogon`/`RopRelease`
+ * - build-order step 4) via `RopDispatcher`, using whichever `RopHandler`s `ropHandlerClasses` registers;
+ * an unrecognized `RopId` simply stops processing (see `RopDispatcher`'s own doc comment for why), the same
+ * "real, functional, no commands implemented yet" stance `BaseEasRoute`'s own skeleton step took for its
+ * empty `commandHandlerClasses` before `ProvisionCommand` landed - here scoped per-ROP instead of per-request.
  *
  * **Always non-chunked**: every response here uses `Content-Length` (via `res.status(200).send(buffer)`),
  * never `Transfer-Encoding: chunked` - both are equally spec-valid per `[MS-OXCMAPIHTTP]`'s own "Common
@@ -57,19 +59,29 @@ function firstHeader(req: HttpRequest, name: string): string | undefined {
  * every other route in this library's own response idiom. See the architecture plan's "Protocol facts"
  * section for the full reasoning and its documented limitation.
  *
- * `mailboxClass` is supplied by the Mongo/SQL concrete subclasses, following the exact one-line-per-backend
- * pattern used throughout this library's other routes/jobs.
+ * `mailboxClass`/`folderClass` are supplied by the Mongo/SQL concrete subclasses, following the exact
+ * one-line-per-backend pattern used throughout this library's other routes/jobs. `folderRepo` is built once
+ * here (not per-handler, unlike EAS's per-command repo pattern) and threaded through `RopContext` to every
+ * `RopHandler` - see `RopHandler.ts`'s own doc comment for why.
  *
  * @author Jean-Philippe Steinmetz
  */
 export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     protected abstract mailboxClass: any;
+    protected abstract folderClass: any;
+
+    /** ROP handler classes to instantiate (one each) in `@Init`, keyed by their own `ropId`. Empty until a
+     * concrete `RopHandler` lands - every ROP is then simply left unprocessed (see `RopDispatcher`'s own doc
+     * comment), the correct, honest behavior for a transport skeleton with no ROPs implemented yet. */
+    protected ropHandlerClasses: any[] = [];
 
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
 
     private mailboxRepo?: RepoUtils<M>;
+    private folderRepo?: RepoUtils<Folder>;
     private sessionManager?: MapiSessionManager;
+    private readonly ropHandlers = new Map<number, RopHandler>();
 
     @Logger
     private logger: any;
@@ -80,7 +92,15 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             name: this.mailboxClass.name,
             args: [this.mailboxClass],
         });
+        this.folderRepo = await this._objectFactory!.newInstance(RepoUtils, {
+            name: this.folderClass.name,
+            args: [this.folderClass],
+        });
         this.sessionManager = await this._objectFactory!.newInstance(MapiSessionManager);
+        for (const HandlerClass of this.ropHandlerClasses) {
+            const handler: RopHandler = await this._objectFactory!.newInstance(HandlerClass);
+            this.ropHandlers.set(handler.ropId, handler);
+        }
     }
 
     @Auth(["jwt"])
@@ -90,7 +110,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
         @Response res: HttpResponse,
         @AuthUser user?: JWTUser,
     ): Promise<void> {
-        if (!this.mailboxRepo || !this.sessionManager) {
+        if (!this.mailboxRepo || !this.folderRepo || !this.sessionManager) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
         if (!user) {
@@ -162,9 +182,11 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     }
 
     /**
-     * `Execute` decodes the outer envelope (`Flags`/`RopBufferSize`/`RopBuffer`/...) and the inner ROP
-     * buffer framing (`RopBuffer.ts`), but - with no `RopHandler`s registered yet in this transport-skeleton
-     * step - always answers with an empty `ropsList`, preserving the incoming `handleTable` unchanged.
+     * `Execute` decodes the outer envelope (`Flags`/`RopBufferSize`/`RopBuffer`/...) and the inner ROP buffer
+     * framing (`RopBuffer.ts`), dispatches every contained ROP via `RopDispatcher`, and re-encodes the
+     * collected responses - preserving the incoming `handleTable` unchanged (this pragmatic subset never
+     * allocates/frees table-wide handle slots at the framing level; individual `RopHandler`s manage their own
+     * entries within `session.handles` instead).
      */
     private async handleExecute(req: HttpRequest, res: HttpResponse): Promise<void> {
         const sessionId: string | undefined = req.cookies["MapiContext"];
@@ -190,8 +212,15 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
         // MaxRopOut/AuxiliaryBufferSize/AuxiliaryBuffer intentionally left unread - no output-size capping or
         // auxiliary-payload support in this pragmatic subset.
 
-        const { handleTable } = decodeRopBuffer(ropBufferBytes);
-        const responseRopBuffer: Buffer = encodeRopBuffer({ ropsList: Buffer.alloc(0), handleTable });
+        const { ropsList, handleTable } = decodeRopBuffer(ropBufferBytes);
+        const context: RopContext = {
+            mailboxUid: session.mailboxUid,
+            userUid: session.userUid,
+            session,
+            folderRepo: this.folderRepo!,
+        };
+        const responseRopsList: Buffer = await dispatchRops(ropsList, this.ropHandlers, context);
+        const responseRopBuffer: Buffer = encodeRopBuffer({ ropsList: responseRopsList, handleTable });
 
         await this.sessionManager!.save(session);
 
