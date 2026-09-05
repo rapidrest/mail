@@ -20,7 +20,7 @@ function buildRequest({ logonId = 0, inputHandleIndex = 7, queryRowsFlags = 0, f
 
 function makeContext(folderRepo: any, messageRepo: any = {}): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo, messageRepo };
+    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo, messageRepo, blobStore: {} as any };
 }
 
 describe("RopQueryRowsHandler Tests", () => {
@@ -56,6 +56,24 @@ describe("RopQueryRowsHandler Tests", () => {
         expect(response.readUInt8()).toBe(0x02); // Origin - BOOKMARK_END
         expect(response.readUInt16LE()).toBe(0); // RowCount
         expect(response.hasMore()).toBe(false);
+    });
+
+    it("Defaults rows/cursor/columns to empty when a table handle was constructed without them.", async () => {
+        const context = makeContext({});
+        context.session.handles[7] = { type: "table", entityUid: "virtual:root" };
+        const handler = new RopQueryRowsHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        expect(response.readUInt32LE()).toBe(0);
+        response.readUInt8();
+        expect(response.readUInt16LE()).toBe(0); // RowCount
+        expect(response.hasMore()).toBe(false);
+        expect(context.session.handles[7]?.cursor).toBe(0);
     });
 
     it("Builds rows with DisplayName/FolderId/ContentCount/UnreadCount/Subfolders columns and advances the cursor.", async () => {
@@ -208,6 +226,35 @@ describe("RopQueryRowsHandler Tests", () => {
         expect(readPropertyValue(response, PropertyType.PtypBoolean)).toBe(true);
         expect(readPropertyValue(response, PropertyType.PtypTime)).toEqual(receivedDate);
         expect(messageRepo.findOne).toHaveBeenCalledWith("m1", { ignoreACL: true });
+    });
+
+    it("Resolves PidTagMid to a session-assigned MID, remembered for a later RopOpenMessage.", async () => {
+        const messageRepo = {
+            findOne: vi.fn().mockResolvedValue({ uid: "m1", subject: "Hi", flags: { read: false }, hasAttachments: false, receivedDate: new Date() }),
+        };
+        const context = makeContext({}, messageRepo);
+        context.session.handles[7] = {
+            type: "table",
+            entityUid: "folder:top",
+            rows: ["message:m1"],
+            cursor: 0,
+            columns: [{ propertyId: 0x674a, propertyType: PropertyType.PtypInteger64 }],
+        };
+        const handler = new RopQueryRowsHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        response.readUInt32LE();
+        response.readUInt8();
+        response.readUInt16LE();
+        response.readUInt8();
+        const mid = readPropertyValue(response, PropertyType.PtypInteger64) as bigint;
+        expect(mid).toBeGreaterThan(0n);
+        expect(Object.values(context.session.messageIds)).toContain("message:m1");
     });
 
     it("Reports MessageFlags 0 for an unread message.", async () => {

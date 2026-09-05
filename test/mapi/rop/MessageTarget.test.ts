@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { resolveFolderMessages, resolveMessageInfo } from "../../../src/mapi/rop/MessageTarget.js";
+import { assignOrGetMid, resolveFolderMessages, resolveMessageInfo } from "../../../src/mapi/rop/MessageTarget.js";
+import { MapiSessionContext } from "../../../src/mapi/MapiSessionManager.js";
 
 describe("MessageTarget Tests", () => {
     describe("resolveMessageInfo", () => {
@@ -38,6 +39,25 @@ describe("MessageTarget Tests", () => {
             const targets = await resolveFolderMessages("folder-1", messageRepo as any);
             expect(targets).toEqual(["message:m1", "message:m2"]);
             expect(messageRepo.find).toHaveBeenCalledWith({ folderUid: "folder-1" }, { ignoreACL: true });
+        });
+    });
+
+    describe("assignOrGetMid", () => {
+        it("Assigns sequential MIDs and reuses an existing assignment for the same target.", () => {
+            const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
+            session.messageIds = { "1": "message:m1" };
+
+            const newMid = assignOrGetMid(session, "message:m2");
+            expect(newMid).toBe(2);
+            expect(session.messageIds["2"]).toBe("message:m2");
+
+            const reused = assignOrGetMid(session, "message:m1");
+            expect(reused).toBe(1);
+        });
+
+        it("Starts from MID 1 when the session has no prior assignments.", () => {
+            const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
+            expect(assignOrGetMid(session, "message:only")).toBe(1);
         });
     });
 });

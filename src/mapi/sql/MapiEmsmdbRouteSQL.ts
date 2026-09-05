@@ -11,6 +11,10 @@ import { RopGetHierarchyTableHandler } from "../rop/RopGetHierarchyTableHandler.
 import { RopGetContentsTableHandler } from "../rop/RopGetContentsTableHandler.js";
 import { RopSetColumnsHandler } from "../rop/RopSetColumnsHandler.js";
 import { RopQueryRowsHandler } from "../rop/RopQueryRowsHandler.js";
+import { RopOpenMessageHandler } from "../rop/RopOpenMessageHandler.js";
+import { RopGetPropertiesSpecificHandler } from "../rop/RopGetPropertiesSpecificHandler.js";
+import { RopOpenStreamHandler } from "../rop/RopOpenStreamHandler.js";
+import { RopReadStreamHandler } from "../rop/RopReadStreamHandler.js";
 
 /**
  * SQL-backed concrete `BaseMapiEmsmdbRoute`. See `MapiEmsmdbRouteMongo.ts`'s doc comment - the same mounting
@@ -30,5 +34,9 @@ export class MapiEmsmdbRouteSQL extends BaseMapiEmsmdbRoute<MailboxSQL> {
         RopGetContentsTableHandler,
         RopSetColumnsHandler,
         RopQueryRowsHandler,
+        RopOpenMessageHandler,
+        RopGetPropertiesSpecificHandler,
+        RopOpenStreamHandler,
+        RopReadStreamHandler,
     ];
 }

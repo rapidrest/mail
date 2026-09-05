@@ -13,7 +13,7 @@ import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
 import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
 import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
-import { registerTestDoubles } from "../../testDoubles.js";
+import { InMemoryBlobStore, registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
 import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
@@ -102,6 +102,10 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
             },
             body.toBuffer(),
         );
+    };
+
+    const blobStore = function (): InMemoryBlobStore {
+        return objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
     };
 
     const connect = async function () {
@@ -435,5 +439,173 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
             subjects.push(readPropertyValue(rowsReader, PropertyType.PtypString) as string);
         }
         expect(subjects.sort()).toEqual(["Hello World", "Second Message"]);
+    });
+
+    it("Reads a real message end to end: OpenMessage, GetPropertiesSpecific(Subject), OpenStream+ReadStream(Body).", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const inbox = await createFolder(mailbox.uid, FolderType.INBOX, "Inbox");
+        const message = await createMessage(mailbox.uid, inbox.uid, { subject: "Read Me" });
+        await blobStore().put(
+            message.bodyBlobKey,
+            Buffer.from("From: sender@example.com\r\nTo: owner@example.com\r\nSubject: Read Me\r\n\r\nActual body text."),
+        );
+        const connectResult = await connect();
+        const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+        const logonRops = new BufferWriter();
+        logonRops.writeUInt8(0xfe);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0x01);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt16LE(0);
+        const logonResult = await execute(cookie, encodeRopBuffer({ ropsList: logonRops.toBuffer(), handleTable: [0xffffffff] }));
+        const logonReader = new BufferReader(logonResult.body);
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        const { ropsList: logonRopsList } = decodeRopBuffer(logonReader.readBytes(logonReader.readUInt32LE()));
+        const logonRopsReader = new BufferReader(logonRopsList);
+        logonRopsReader.readUInt8();
+        logonRopsReader.readUInt8();
+        logonRopsReader.readUInt32LE();
+        logonRopsReader.readUInt8();
+        logonRopsReader.readBigUInt64LE(); // Root
+        logonRopsReader.readBigUInt64LE(); // Deferred Action
+        logonRopsReader.readBigUInt64LE(); // Spooler Queue
+        logonRopsReader.readBigUInt64LE(); // IPM Subtree
+        const inboxFid = logonRopsReader.readBigUInt64LE(); // Inbox
+
+        const openFolderRops = new BufferWriter();
+        openFolderRops.writeUInt8(0x02);
+        openFolderRops.writeUInt8(0);
+        openFolderRops.writeUInt8(0); // InputHandleIndex (logon)
+        openFolderRops.writeUInt8(1); // OutputHandleIndex
+        openFolderRops.writeUInt8(0); // OpenModeFlags
+        openFolderRops.writeBigUInt64LE(inboxFid);
+        await execute(cookie, encodeRopBuffer({ ropsList: openFolderRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+
+        const tableRops = new BufferWriter();
+        tableRops.writeUInt8(0x05);
+        tableRops.writeUInt8(0);
+        tableRops.writeUInt8(1); // InputHandleIndex (folder)
+        tableRops.writeUInt8(2); // OutputHandleIndex
+        tableRops.writeUInt8(0); // TableFlags
+        await execute(cookie, encodeRopBuffer({ ropsList: tableRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff, 0xffffffff] }));
+
+        const setColumnsRops = new BufferWriter();
+        setColumnsRops.writeUInt8(0x12);
+        setColumnsRops.writeUInt8(0);
+        setColumnsRops.writeUInt8(2); // InputHandleIndex (table)
+        setColumnsRops.writeUInt8(0); // SetColumnsFlags
+        setColumnsRops.writeUInt16LE(2);
+        writePropertyTag(setColumnsRops, { propertyId: 0x0037, propertyType: PropertyType.PtypString });
+        writePropertyTag(setColumnsRops, { propertyId: 0x674a, propertyType: PropertyType.PtypInteger64 });
+        await execute(cookie, encodeRopBuffer({ ropsList: setColumnsRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const queryRowsRops = new BufferWriter();
+        queryRowsRops.writeUInt8(0x15);
+        queryRowsRops.writeUInt8(0);
+        queryRowsRops.writeUInt8(2); // InputHandleIndex (table)
+        queryRowsRops.writeUInt8(0); // QueryRowsFlags
+        queryRowsRops.writeUInt8(1); // ForwardRead
+        queryRowsRops.writeUInt16LE(10);
+        const queryRowsResult = await execute(cookie, encodeRopBuffer({ ropsList: queryRowsRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const queryRowsReader = new BufferReader(queryRowsResult.body);
+        queryRowsReader.readUInt32LE();
+        queryRowsReader.readUInt32LE();
+        queryRowsReader.readUInt32LE();
+        const { ropsList: queryRowsList } = decodeRopBuffer(queryRowsReader.readBytes(queryRowsReader.readUInt32LE()));
+        const rowsReader = new BufferReader(queryRowsList);
+        rowsReader.readUInt8();
+        rowsReader.readUInt8();
+        rowsReader.readUInt32LE();
+        rowsReader.readUInt8();
+        expect(rowsReader.readUInt16LE()).toBe(1); // RowCount
+        rowsReader.readUInt8(); // PropertyRow Flags
+        expect(readPropertyValue(rowsReader, PropertyType.PtypString)).toBe("Read Me");
+        const mid = readPropertyValue(rowsReader, PropertyType.PtypInteger64) as bigint;
+
+        const openMessageRops = new BufferWriter();
+        openMessageRops.writeUInt8(0x03);
+        openMessageRops.writeUInt8(0); // LogonId
+        openMessageRops.writeUInt8(1); // InputHandleIndex (folder)
+        openMessageRops.writeUInt8(3); // OutputHandleIndex
+        openMessageRops.writeUInt16LE(0); // CodePageId
+        openMessageRops.writeBigUInt64LE(inboxFid);
+        openMessageRops.writeUInt8(0); // OpenModeFlags
+        openMessageRops.writeBigUInt64LE(mid);
+        const openMessageResult = await execute(cookie, encodeRopBuffer({ ropsList: openMessageRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+        const openMessageReader = new BufferReader(openMessageResult.body);
+        openMessageReader.readUInt32LE();
+        openMessageReader.readUInt32LE();
+        openMessageReader.readUInt32LE();
+        const { ropsList: openMessageRopsList } = decodeRopBuffer(openMessageReader.readBytes(openMessageReader.readUInt32LE()));
+        const openMessageRopsReader = new BufferReader(openMessageRopsList);
+        openMessageRopsReader.readUInt8();
+        openMessageRopsReader.readUInt8();
+        expect(openMessageRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+        const getPropsRops = new BufferWriter();
+        getPropsRops.writeUInt8(0x07);
+        getPropsRops.writeUInt8(0); // LogonId
+        getPropsRops.writeUInt8(3); // InputHandleIndex (message)
+        getPropsRops.writeUInt16LE(0); // PropertySizeLimit
+        getPropsRops.writeUInt16LE(0); // WantUnicode
+        getPropsRops.writeUInt16LE(1);
+        writePropertyTag(getPropsRops, { propertyId: 0x0037, propertyType: PropertyType.PtypString });
+        const getPropsResult = await execute(cookie, encodeRopBuffer({ ropsList: getPropsRops.toBuffer(), handleTable: [0xffffffff] }));
+        const getPropsReader = new BufferReader(getPropsResult.body);
+        getPropsReader.readUInt32LE();
+        getPropsReader.readUInt32LE();
+        getPropsReader.readUInt32LE();
+        const { ropsList: getPropsRopsList } = decodeRopBuffer(getPropsReader.readBytes(getPropsReader.readUInt32LE()));
+        const getPropsRopsReader = new BufferReader(getPropsRopsList);
+        getPropsRopsReader.readUInt8();
+        getPropsRopsReader.readUInt8();
+        expect(getPropsRopsReader.readUInt32LE()).toBe(0);
+        getPropsRopsReader.readUInt8(); // PropertyRow Flags
+        expect(readPropertyValue(getPropsRopsReader, PropertyType.PtypString)).toBe("Read Me");
+
+        const openStreamRops = new BufferWriter();
+        openStreamRops.writeUInt8(0x2b);
+        openStreamRops.writeUInt8(0); // LogonId
+        openStreamRops.writeUInt8(3); // InputHandleIndex (message)
+        openStreamRops.writeUInt8(4); // OutputHandleIndex
+        writePropertyTag(openStreamRops, { propertyId: 0x1000, propertyType: PropertyType.PtypString });
+        openStreamRops.writeUInt8(0); // OpenModeFlags
+        const openStreamResult = await execute(cookie, encodeRopBuffer({ ropsList: openStreamRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+        const openStreamReader = new BufferReader(openStreamResult.body);
+        openStreamReader.readUInt32LE();
+        openStreamReader.readUInt32LE();
+        openStreamReader.readUInt32LE();
+        const { ropsList: openStreamRopsList } = decodeRopBuffer(openStreamReader.readBytes(openStreamReader.readUInt32LE()));
+        const openStreamRopsReader = new BufferReader(openStreamRopsList);
+        openStreamRopsReader.readUInt8();
+        openStreamRopsReader.readUInt8();
+        expect(openStreamRopsReader.readUInt32LE()).toBe(0);
+        const streamSize = openStreamRopsReader.readUInt32LE();
+        expect(streamSize).toBeGreaterThan(0);
+
+        const readStreamRops = new BufferWriter();
+        readStreamRops.writeUInt8(0x2c);
+        readStreamRops.writeUInt8(0); // LogonId
+        readStreamRops.writeUInt8(4); // InputHandleIndex (stream)
+        readStreamRops.writeUInt16LE(1000);
+        const readStreamResult = await execute(cookie, encodeRopBuffer({ ropsList: readStreamRops.toBuffer(), handleTable: [0xffffffff] }));
+        const readStreamReader = new BufferReader(readStreamResult.body);
+        readStreamReader.readUInt32LE();
+        readStreamReader.readUInt32LE();
+        readStreamReader.readUInt32LE();
+        const { ropsList: readStreamRopsList } = decodeRopBuffer(readStreamReader.readBytes(readStreamReader.readUInt32LE()));
+        const readStreamRopsReader = new BufferReader(readStreamRopsList);
+        readStreamRopsReader.readUInt8();
+        readStreamRopsReader.readUInt8();
+        expect(readStreamRopsReader.readUInt32LE()).toBe(0);
+        const dataSize = readStreamRopsReader.readUInt16LE();
+        expect(dataSize).toBe(streamSize);
+        expect(readPropertyValue(readStreamRopsReader, PropertyType.PtypString)).toBe("Actual body text.");
     });
 });

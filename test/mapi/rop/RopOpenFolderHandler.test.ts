@@ -20,7 +20,7 @@ function buildRequest({ logonId = 0, inputHandleIndex = 0, outputHandleIndex = 1
 function makeContext(folderIds: Record<string, string> = {}): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
     session.folderIds = folderIds;
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo: {} as any };
+    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo: {} as any, blobStore: {} as any };
 }
 
 describe("RopOpenFolderHandler Tests", () => {

@@ -36,6 +36,7 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: messageRepo as any,
+            blobStore: {} as any,
         };
 
         const handler = new RopGetContentsTableHandler();
@@ -67,6 +68,7 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: messageRepo as any,
+            blobStore: {} as any,
         };
 
         const handler = new RopGetContentsTableHandler();
@@ -85,6 +87,7 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: {} as any,
+            blobStore: {} as any,
         };
         const handler = new RopGetContentsTableHandler();
         const writer = new BufferWriter();

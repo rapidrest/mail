@@ -38,6 +38,7 @@ function makeContext(folderRepo: any): RopContext {
         session: new MapiSessionContext({ mailboxUid: MAILBOX_UID, userUid: "user-1" }),
         folderRepo,
         messageRepo: {} as any,
+        blobStore: {} as any,
     };
 }
 

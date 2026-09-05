@@ -16,13 +16,19 @@ const SESSION_TTL_SECONDS = 15 * 60;
  * `"table"` handle's `rows`/`columns`/`cursor` hold `RopGetHierarchyTable`/`RopSetColumns`/`RopQueryRows`
  * state for that specific table instance: `rows` is the resolved, order-fixed list of entity targets (same
  * `"virtual:<name>"`/`"folder:<uid>"` format) this table enumerates, `columns` the `RopSetColumns`-configured
- * property list, `cursor` how many rows `RopQueryRows` has already returned. */
+ * property list, `cursor` how many rows `RopQueryRows` has already returned. A `"stream"` handle's `entityUid`
+ * is the `"message:<uid>"` target its content was opened from, `propertyId`/`propertyType` the `PropertyTag`
+ * `RopOpenStream` opened (this pragmatic subset only ever supports `PidTagBody`/`PtypString`, see
+ * `MessageBodyStream.ts`), and `streamPosition` how many bytes `RopReadStream` has already returned. */
 export interface MapiObjectHandle {
-    type: "logon" | "folder" | "message" | "table";
+    type: "logon" | "folder" | "message" | "table" | "stream";
     entityUid: string;
     rows?: string[];
     columns?: { propertyId: number; propertyType: number }[];
     cursor?: number;
+    propertyId?: number;
+    propertyType?: number;
+    streamPosition?: number;
 }
 
 /**
@@ -47,6 +53,12 @@ export class MapiSessionContext extends SimpleEntity {
      * valued `"virtual:<name>"` or `"folder:<uid>"` - see `RopLogonHandler`'s own doc comment. Populated by
      * `RopLogon`, read back by a later `RopOpenFolder`. */
     public folderIds: Record<string, string> = {};
+
+    /** This session's MID assignments, keyed by MID (decimal string), valued `"message:<uid>"` - the message
+     * analog of `folderIds` above. Unlike `folderIds` (pre-populated by `RopLogon`), a MID only ever comes into
+     * existence lazily, the first time a `RopQueryRows` row exposes a message's `PidTagMid` column (see
+     * `MessageTarget.assignOrGetMid`), read back by a later `RopOpenMessage`. */
+    public messageIds: Record<string, string> = {};
 
     /** `mailboxUid`/`userUid` are always known at construction time (the only call site is
      * `MapiSessionManager.create()`, which resolves both up front) - required here rather than optional with

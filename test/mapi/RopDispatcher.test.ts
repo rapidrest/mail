@@ -15,6 +15,7 @@ describe("RopDispatcher Tests", () => {
             session: new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" }),
             folderRepo: {} as any,
             messageRepo: {} as any,
+            blobStore: {} as any,
         };
     };
 

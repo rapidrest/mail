@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import type { RepoUtils } from "@rapidrest/service-core";
 import { Message } from "../../models/types.js";
+import type { MapiSessionContext } from "../MapiSessionManager.js";
 
 /**
  * The `RopGetContentsTable` analog of `FolderTarget.ts`: resolves a `"message:<uid>"` row target (see
@@ -36,4 +37,22 @@ export async function resolveMessageInfo(target: string, messageRepo: RepoUtils<
 export async function resolveFolderMessages(folderUid: string, messageRepo: RepoUtils<any>): Promise<string[]> {
     const messages: Message[] = await messageRepo.find({ folderUid }, { ignoreACL: true });
     return messages.map((m) => `message:${m.uid}`);
+}
+
+/**
+ * Returns `target`'s existing MID if an earlier `RopQueryRows` row already assigned one (a linear scan of
+ * `session.messageIds` - there is no reverse index, but a single table's row count in this pragmatic subset is
+ * never large enough for this to be a real cost), otherwise assigns and remembers the next free small integer
+ * MID. The exact `FolderTarget.assignOrGetFid` pattern, adapted for messages: this is what lets a client
+ * `RopOpenMessage` a message it only ever learned about via a `RopQueryRows` row's `PidTagMid` column.
+ */
+export function assignOrGetMid(session: MapiSessionContext, target: string): number {
+    for (const [mid, existingTarget] of Object.entries(session.messageIds)) {
+        if (existingTarget === target) {
+            return Number(mid);
+        }
+    }
+    const nextMid = Math.max(0, ...Object.keys(session.messageIds).map(Number)) + 1;
+    session.messageIds[String(nextMid)] = target;
+    return nextMid;
 }

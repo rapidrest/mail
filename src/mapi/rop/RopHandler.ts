@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import type { RepoUtils } from "@rapidrest/service-core";
+import type { BlobStore } from "../../blob/BlobStore.js";
 import type { BufferReader, BufferWriter } from "../codec/BufferCursor.js";
 import type { MapiSessionContext } from "../MapiSessionManager.js";
 
@@ -22,6 +23,7 @@ export interface RopContext {
     session: MapiSessionContext;
     folderRepo: RepoUtils<any>;
     messageRepo: RepoUtils<any>;
+    blobStore: BlobStore;
 }
 
 /**

@@ -31,7 +31,7 @@ describe("RopGetHierarchyTableHandler Tests", () => {
         };
         const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
         session.handles[5] = { type: "folder", entityUid: "folder:top1" };
-        const context: RopContext = { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: folderRepo as any, messageRepo: {} as any };
+        const context: RopContext = { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: folderRepo as any, messageRepo: {} as any, blobStore: {} as any };
 
         const handler = new RopGetHierarchyTableHandler();
         const writer = new BufferWriter();
@@ -53,7 +53,7 @@ describe("RopGetHierarchyTableHandler Tests", () => {
 
     it("Returns MAPI_E_INVALID_OBJECT when InputHandleIndex isn't a folder handle.", async () => {
         const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
-        const context: RopContext = { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo: {} as any };
+        const context: RopContext = { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo: {} as any, blobStore: {} as any };
         const handler = new RopGetHierarchyTableHandler();
         const writer = new BufferWriter();
 

@@ -18,8 +18,9 @@ import { MapiSessionContext, MapiSessionManager } from "./MapiSessionManager.js"
 import { dispatchRops } from "./RopDispatcher.js";
 import type { RopContext, RopHandler } from "./rop/RopHandler.js";
 import { resolveCallerMailboxUid } from "../util/MailboxScopeUtils.js";
+import type { BlobStore } from "../blob/BlobStore.js";
 import { Folder, Mailbox } from "../models/types.js";
-const { Init, Logger } = ObjectDecorators;
+const { Init, Inject, Logger } = ObjectDecorators;
 const { Auth, Post, Request, Response, User: AuthUser } = RouteDecorators;
 
 /** The well-known MAPI HRESULT `MAPI_E_LOGON_FAILED`, reused here to signal "no such session - reconnect"
@@ -85,6 +86,9 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     private sessionManager?: MapiSessionManager;
     private readonly ropHandlers = new Map<number, RopHandler>();
 
+    @Inject("BlobStore")
+    private blobStore?: BlobStore;
+
     @Logger
     private logger: any;
 
@@ -116,7 +120,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
         @Response res: HttpResponse,
         @AuthUser user?: JWTUser,
     ): Promise<void> {
-        if (!this.mailboxRepo || !this.folderRepo || !this.messageRepo || !this.sessionManager) {
+        if (!this.mailboxRepo || !this.folderRepo || !this.messageRepo || !this.sessionManager || !this.blobStore) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
         if (!user) {
@@ -225,6 +229,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             session,
             folderRepo: this.folderRepo!,
             messageRepo: this.messageRepo!,
+            blobStore: this.blobStore!,
         };
         const responseRopsList: Buffer = await dispatchRops(ropsList, this.ropHandlers, context);
         const responseRopBuffer: Buffer = encodeRopBuffer({ ropsList: responseRopsList, handleTable });
