@@ -7,6 +7,7 @@ import { BaseEasRoute } from "../BaseEasRoute.js";
 import { ProvisionCommand } from "../commands/ProvisionCommand.js";
 import { PingCommand } from "../commands/PingCommand.js";
 import { FolderSyncCommandMongo } from "../commands/mongo/FolderSyncCommandMongo.js";
+import { SyncCommandMongo } from "../commands/mongo/SyncCommandMongo.js";
 
 /**
  * Mongo-backed concrete `BaseEasRoute`. A deployment mounts this at the well-known EAS path via its own
@@ -18,5 +19,5 @@ import { FolderSyncCommandMongo } from "../commands/mongo/FolderSyncCommandMongo
 export class EasRouteMongo extends BaseEasRoute<DeviceSyncStateMongo, MailboxMongo> {
     protected deviceSyncStateClass: any = DeviceSyncStateMongo;
     protected mailboxClass: any = MailboxMongo;
-    protected commandHandlerClasses: any[] = [ProvisionCommand, FolderSyncCommandMongo, PingCommand];
+    protected commandHandlerClasses: any[] = [ProvisionCommand, FolderSyncCommandMongo, SyncCommandMongo, PingCommand];
 }

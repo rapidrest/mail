@@ -20,13 +20,14 @@ import * as uuid from "uuid";
 import { Repository } from "typeorm";
 import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
+import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
 import { DeviceSyncStateSQL } from "../../../src/models/sql/DeviceSyncStateSQL.js";
 import { registerTestDoubles } from "../../testDoubles.js";
 import { WbxmlEncoder } from "../../../src/eas/codec/WbxmlEncoder.js";
 import { WbxmlDecoder } from "../../../src/eas/codec/WbxmlDecoder.js";
 import { element, textElement, findChild, childText, type WbxmlElement } from "../../../src/eas/codec/WbxmlElement.js";
 import { WbxmlCodePage } from "../../../src/eas/codec/WbxmlCodePages.js";
-import { FolderType } from "../../../src/models/types.js";
+import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
 
 describe("Route:EasRouteSQL Tests", () => {
     const logger = Logger();
@@ -35,6 +36,7 @@ describe("Route:EasRouteSQL Tests", () => {
     const baseUrl = "/sql/eas";
     let mailboxRepo: Repository<MailboxSQL>;
     let folderRepo: Repository<FolderSQL>;
+    let messageRepo: Repository<MessageSQL>;
     let deviceSyncStateRepo: Repository<DeviceSyncStateSQL>;
     let aclRepo: Repository<AccessControlListSQL>;
 
@@ -80,6 +82,29 @@ describe("Route:EasRouteSQL Tests", () => {
     };
 
     /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
+    const createMessage = async function (mailboxUid: string, folderUid: string, data?: Partial<MessageSQL>): Promise<MessageSQL> {
+        return await messageRepo.save(
+            new MessageSQL({
+                mailboxUid,
+                folderUid,
+                messageId: `${uuid.v4()}@example.com`,
+                subject: "Test Subject",
+                from: { address: "sender@example.com", displayName: "Sender", type: RecipientType.TO },
+                recipients: [{ address: "owner@example.com", type: RecipientType.TO }],
+                sentDate: new Date(),
+                receivedDate: new Date(),
+                bodyBlobKey: `bodies/${uuid.v4()}`,
+                bodyPreview: "Hello world",
+                flags: { read: false, flagged: false, answered: false, forwarded: false },
+                importance: MessageImportance.NORMAL,
+                references: [],
+                hasAttachments: false,
+                ...data,
+            } as any),
+        );
+    };
+
+    /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
     const postWbxml = async function (cmd: string, deviceId: string, requestBody?: WbxmlElement): Promise<WbxmlElement> {
         const req = request(server.getApplication())
             .post(`${baseUrl}?Cmd=${cmd}&DeviceId=${deviceId}`)
@@ -91,6 +116,35 @@ describe("Route:EasRouteSQL Tests", () => {
         return new WbxmlDecoder().decode(Buffer.from(result.body));
     };
 
+    /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
+    const provisionDevice = async function (deviceId: string): Promise<void> {
+        const phase1 = await postWbxml(
+            "Provision",
+            deviceId,
+            element(WbxmlCodePage.Provision, "Provision", [
+                element(WbxmlCodePage.Provision, "Policies", [
+                    element(WbxmlCodePage.Provision, "Policy", [
+                        textElement(WbxmlCodePage.Provision, "PolicyType", "MS-EAS-Provisioning-WBXML"),
+                    ]),
+                ]),
+            ]),
+        );
+        const policyKey = childText(findChild(findChild(phase1, "Policies")!, "Policy")!, "PolicyKey")!;
+        await postWbxml(
+            "Provision",
+            deviceId,
+            element(WbxmlCodePage.Provision, "Provision", [
+                element(WbxmlCodePage.Provision, "Policies", [
+                    element(WbxmlCodePage.Provision, "Policy", [
+                        textElement(WbxmlCodePage.Provision, "PolicyType", "MS-EAS-Provisioning-WBXML"),
+                        textElement(WbxmlCodePage.Provision, "PolicyKey", policyKey),
+                        textElement(WbxmlCodePage.Provision, "Status", "1"),
+                    ]),
+                ]),
+            ]),
+        );
+    };
+
     beforeAll(async () => {
         registerTestDoubles(objectFactory);
         await server.start();
@@ -100,6 +154,7 @@ describe("Route:EasRouteSQL Tests", () => {
         if (isSqlDataSource(conn)) {
             mailboxRepo = conn.getRepository(MailboxSQL);
             folderRepo = conn.getRepository(FolderSQL);
+            messageRepo = conn.getRepository(MessageSQL);
             deviceSyncStateRepo = conn.getRepository(DeviceSyncStateSQL);
         } else {
             throw new Error("Could not find sql connection");
@@ -119,6 +174,7 @@ describe("Route:EasRouteSQL Tests", () => {
 
     beforeEach(async () => {
         await deviceSyncStateRepo.clear();
+        await messageRepo.clear();
         await folderRepo.clear();
         await mailboxRepo.clear();
         await aclRepo.clear();
@@ -314,34 +370,6 @@ describe("Route:EasRouteSQL Tests", () => {
     });
 
     describe("FolderSync command", () => {
-        const provisionDevice = async function (deviceId: string): Promise<void> {
-            const phase1 = await postWbxml(
-                "Provision",
-                deviceId,
-                element(WbxmlCodePage.Provision, "Provision", [
-                    element(WbxmlCodePage.Provision, "Policies", [
-                        element(WbxmlCodePage.Provision, "Policy", [
-                            textElement(WbxmlCodePage.Provision, "PolicyType", "MS-EAS-Provisioning-WBXML"),
-                        ]),
-                    ]),
-                ]),
-            );
-            const policyKey = childText(findChild(findChild(phase1, "Policies")!, "Policy")!, "PolicyKey")!;
-            await postWbxml(
-                "Provision",
-                deviceId,
-                element(WbxmlCodePage.Provision, "Provision", [
-                    element(WbxmlCodePage.Provision, "Policies", [
-                        element(WbxmlCodePage.Provision, "Policy", [
-                            textElement(WbxmlCodePage.Provision, "PolicyType", "MS-EAS-Provisioning-WBXML"),
-                            textElement(WbxmlCodePage.Provision, "PolicyKey", policyKey),
-                            textElement(WbxmlCodePage.Provision, "Status", "1"),
-                        ]),
-                    ]),
-                ]),
-            );
-        };
-
         it("Treats a request sent with no WBXML body at all the same as SyncKey '0' (initial sync).", async () => {
             await createMailbox(owner.uid);
             await provisionDevice("dev1");
@@ -540,6 +568,212 @@ describe("Route:EasRouteSQL Tests", () => {
 
             expect(childText(noChangeResponse, "Status")).toBe("1");
             expect(findChild(noChangeResponse, "Changes")).toBeUndefined();
+        });
+    });
+
+    describe("Sync command", () => {
+        const syncRequest = function (syncKey: string, collectionClass: string | undefined, folderUid: string | undefined): WbxmlElement {
+            return element(WbxmlCodePage.AirSync, "Sync", [
+                element(WbxmlCodePage.AirSync, "Collections", [
+                    element(WbxmlCodePage.AirSync, "Collection", [
+                        ...(collectionClass ? [textElement(WbxmlCodePage.AirSync, "Class", collectionClass)] : []),
+                        textElement(WbxmlCodePage.AirSync, "SyncKey", syncKey),
+                        ...(folderUid ? [textElement(WbxmlCodePage.AirSync, "CollectionId", folderUid)] : []),
+                    ]),
+                ]),
+            ]);
+        };
+
+        it("Returns a fresh SyncKey with no items on the initial (SyncKey 0) request.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+
+            const response = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            expect(childText(collection, "Status")).toBe("1");
+            expect(childText(collection, "SyncKey")).not.toBe("0");
+            expect(findChild(collection, "Commands")).toBeUndefined();
+        });
+
+        it("Reports an existing message as an Add on the first real sync round after the initial request.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const message = await createMessage(mailbox.uid, folder.uid, { subject: "Hello EAS" });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
+            const initialKey = childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!;
+
+            const response = await postWbxml("Sync", "dev1", syncRequest(initialKey, "Email", folder.uid));
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            expect(childText(collection, "Status")).toBe("1");
+            expect(childText(collection, "SyncKey")).not.toBe(initialKey);
+            const commands = findChild(collection, "Commands")!;
+            const add = findChild(commands, "Add")!;
+            expect(childText(add, "ServerId")).toBe(message.uid);
+            const appData = findChild(add, "ApplicationData")!;
+            expect(childText(appData, "Subject")).toBe("Hello EAS");
+            expect(childText(appData, "From")).toBe("Sender <sender@example.com>");
+            expect(childText(appData, "Read")).toBe("0");
+        });
+
+        it("Reports a message deleted via the REST API as a Delete on the next sync round.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const message = await createMessage(mailbox.uid, folder.uid);
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
+            const afterAdd = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Email", folder.uid),
+            );
+            const keyAfterAdd = childText(findChild(findChild(afterAdd, "Collections")!, "Collection")!, "SyncKey")!;
+
+            const deleteResult = await request(server.getApplication())
+                .delete(`/sql/messages/${message.uid}`)
+                .set("Authorization", "jwt " + ownerToken);
+            expect(deleteResult.status).toBeGreaterThanOrEqual(200);
+            expect(deleteResult.status).toBeLessThan(300);
+
+            const response = await postWbxml("Sync", "dev1", syncRequest(keyAfterAdd, "Email", folder.uid));
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            const commands = findChild(collection, "Commands")!;
+            const del = findChild(commands, "Delete")!;
+            expect(childText(del, "ServerId")).toBe(message.uid);
+        });
+
+        it("Rejects an incorrect SyncKey with Status 3, forcing the client back to a full resync.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+
+            const response = await postWbxml("Sync", "dev1", syncRequest("999:2020-01-01T00:00:00.000Z", "Email", folder.uid));
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            expect(childText(collection, "Status")).toBe("3");
+        });
+
+        it("Returns a top-level Status 3 when the request has no Collection at all.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                element(WbxmlCodePage.AirSync, "Sync", [element(WbxmlCodePage.AirSync, "Collections", [])]),
+            );
+
+            expect(childText(response, "Status")).toBe("3");
+        });
+
+        it("Returns a per-collection Status 4 when CollectionId is missing.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const response = await postWbxml("Sync", "dev1", syncRequest("0", "Email", undefined));
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            expect(childText(collection, "Status")).toBe("4");
+        });
+
+        it("Returns a per-collection Status 4 for an unsupported collection Class.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Contacts", type: FolderType.CONTACTS });
+
+            const response = await postWbxml("Sync", "dev1", syncRequest("0", "Contacts", folder.uid));
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            expect(childText(collection, "Status")).toBe("4");
+        });
+
+        it("Reports no Commands when nothing changed since the last sync.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            await createMessage(mailbox.uid, folder.uid);
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
+            const afterAdd = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Email", folder.uid),
+            );
+
+            const noChangeResponse = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(afterAdd, "Collections")!, "Collection")!, "SyncKey")!, "Email", folder.uid),
+            );
+
+            const collection = findChild(findChild(noChangeResponse, "Collections")!, "Collection")!;
+            expect(childText(collection, "Status")).toBe("1");
+            expect(findChild(collection, "Commands")).toBeUndefined();
+        });
+
+        it("Reports a message updated via the REST API as a Change on the next sync round.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const message = await createMessage(mailbox.uid, folder.uid);
+            // Backdated well outside computeChanges()'s NEWLY_CREATED_TOLERANCE_MS window - see the identical
+            // reasoning on the FolderSync rename test above.
+            const oldDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+            await messageRepo.update({ uid: message.uid }, { dateCreated: oldDate, dateModified: oldDate });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
+            const afterAdd = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Email", folder.uid),
+            );
+
+            const updateResult = await request(server.getApplication())
+                .put(`/sql/messages/${message.uid}`)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ uid: message.uid, version: message.version, subject: "Updated Subject" });
+            expect(updateResult.status).toBe(200);
+
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(afterAdd, "Collections")!, "Collection")!, "SyncKey")!, "Email", folder.uid),
+            );
+
+            const collection = findChild(findChild(response, "Collections")!, "Collection")!;
+            const commands = findChild(collection, "Commands")!;
+            const change = findChild(commands, "Change")!;
+            expect(childText(change, "ServerId")).toBe(message.uid);
+            expect(childText(findChild(change, "ApplicationData")!, "Subject")).toBe("Updated Subject");
+        });
+
+        it("Omits To and includes Cc/plain-address From for a message with no To recipients.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            await createMessage(mailbox.uid, folder.uid, {
+                from: { address: "sender@example.com", type: RecipientType.TO },
+                recipients: [{ address: "cc1@example.com", type: RecipientType.CC }],
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Email", folder.uid),
+            );
+
+            const commands = findChild(findChild(findChild(response, "Collections")!, "Collection")!, "Commands")!;
+            const appData = findChild(findChild(commands, "Add")!, "ApplicationData")!;
+            expect(childText(appData, "From")).toBe("sender@example.com");
+            expect(findChild(appData, "To")).toBeUndefined();
+            expect(childText(appData, "Cc")).toBe("cc1@example.com");
         });
     });
 });
