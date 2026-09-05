@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import * as crypto from "crypto";
 import { ObjectDecorators } from "@rapidrest/core";
-import { BackgroundService, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
+import { BackgroundService, NotificationUtils, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
 import { resolveDeliveryVerdict, ScanPipeline, ScanPipelineResult } from "../scan/ScanPipeline.js";
 import { findOrCreateWellKnownFolder } from "../util/FolderUtils.js";
@@ -66,6 +66,10 @@ export abstract class ScanQueueJob<
 
     @Inject(ScanPipeline)
     private scanPipeline?: ScanPipeline;
+
+    /** Publishes a live-update notification (see `push/MailPushRoute.ts`) once a message is delivered. */
+    @Inject(NotificationUtils)
+    private notificationUtils?: NotificationUtils;
 
     @Config("mail:jobs:scan_queue:schedule", "*/10 * * * * *")
     private scheduleExpr: string = "*/10 * * * * *";
@@ -238,6 +242,7 @@ export abstract class ScanQueueJob<
                 }),
                 { ignoreACL: true },
             );
+            this.notificationUtils?.sendMessage(folder.uid, this.messageClass.name, "create", message);
 
             for (const attachment of result.attachments) {
                 const blobKey = `attachments/${crypto.randomUUID()}`;

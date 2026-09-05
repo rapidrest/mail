@@ -12,6 +12,7 @@ import {
     ObjectFactory,
     ConnectionManager,
     ACLAction,
+    NotificationUtils,
 } from "@rapidrest/service-core";
 import { JWTUtils, Logger } from "@rapidrest/core";
 import * as uuid from "uuid";
@@ -200,6 +201,32 @@ describe("Route:ContactMongo Tests", () => {
         // No per-record ACL should have been created for this contact (recordACL: false).
         const acl = await aclRepo.findOne({ uid: result.body.uid } as any);
         expect(acl).toBeNull();
+    });
+
+    it("Publishes a live-update notification to the folder's channel on create.", async () => {
+        const sendMessageSpy = vi.spyOn(NotificationUtils.prototype, "sendMessage");
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+
+        const result = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({
+                mailboxUid: mailbox.uid,
+                folderUid: folder.uid,
+                displayName: "New Contact",
+                emails: [],
+                phones: [],
+                addresses: [],
+            });
+
+        expect(sendMessageSpy).toHaveBeenCalledWith(
+            folder.uid,
+            "ContactMongo",
+            "create",
+            expect.objectContaining({ uid: result.body.uid }),
+        );
+        sendMessageSpy.mockRestore();
     });
 
     it("A different user cannot create a contact in a folder they don't have access to.", async () => {
@@ -412,6 +439,28 @@ describe("Route:ContactMongo Tests", () => {
         expect(result.body.folderUid).toBe(destinationFolder.uid);
     });
 
+    it("Publishes live-update notifications to BOTH the old and new folder channels when a re-parenting update moves a contact.", async () => {
+        const sendMessageSpy = vi.spyOn(NotificationUtils.prototype, "sendMessage");
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const destinationFolder = await createFolder(mailbox.uid);
+        const contact = await createContact(mailbox.uid, folder.uid);
+
+        await request(server.getApplication())
+            .put(`${baseUrl}/${contact.uid}`)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({ uid: contact.uid, version: contact.version, folderUid: destinationFolder.uid });
+
+        expect(sendMessageSpy).toHaveBeenCalledWith(
+            destinationFolder.uid,
+            "ContactMongo",
+            "update",
+            expect.objectContaining({ uid: contact.uid, folderUid: destinationFolder.uid }),
+        );
+        expect(sendMessageSpy).toHaveBeenCalledWith(folder.uid, "ContactMongo", "delete", { uid: contact.uid });
+        sendMessageSpy.mockRestore();
+    });
+
     it("Owner can delete a contact they have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
@@ -426,6 +475,20 @@ describe("Route:ContactMongo Tests", () => {
 
         const existing = await contactRepo.findOne({ uid: contact.uid } as any);
         expect(existing).toBeNull();
+    });
+
+    it("Publishes a live-update notification to the folder's channel on delete.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const contact = await createContact(mailbox.uid, folder.uid);
+        const sendMessageSpy = vi.spyOn(NotificationUtils.prototype, "sendMessage");
+
+        await request(server.getApplication())
+            .delete(`${baseUrl}/${contact.uid}`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(sendMessageSpy).toHaveBeenCalledWith(folder.uid, "ContactMongo", "delete", { uid: contact.uid });
+        sendMessageSpy.mockRestore();
     });
 
     it("Deleting a nonexistent contact returns 404.", async () => {

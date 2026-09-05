@@ -12,6 +12,7 @@ import {
     ObjectFactory,
     ConnectionManager,
     ACLAction,
+    NotificationUtils,
 } from "@rapidrest/service-core";
 import { JWTUtils, Logger } from "@rapidrest/core";
 import * as uuid from "uuid";
@@ -247,6 +248,31 @@ describe("Route:FolderMongo Tests", () => {
 
         const acl = await aclRepo.findOne({ uid: result.body.uid } as any);
         expect(acl?.parentUid).toBe(mailbox.uid);
+    });
+
+    it("Publishes a live-update notification to the owning mailbox's channel on create.", async () => {
+        const sendMessageSpy = vi.spyOn(NotificationUtils.prototype, "sendMessage");
+        const mailbox = await createMailbox(owner.uid);
+
+        const result = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({
+                mailboxUid: mailbox.uid,
+                name: "Archive",
+                type: FolderType.USER,
+                unreadCount: 0,
+                totalCount: 0,
+                syncKeyVersion: 0,
+            });
+
+        expect(sendMessageSpy).toHaveBeenCalledWith(
+            mailbox.uid,
+            "FolderMongo",
+            "create",
+            expect.objectContaining({ uid: result.body.uid }),
+        );
+        sendMessageSpy.mockRestore();
     });
 
     it("A different user cannot create a folder in a mailbox they don't own.", async () => {

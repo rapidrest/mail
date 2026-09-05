@@ -1,5 +1,6 @@
 export * from "./AttachmentRouteSQL.js";
 export * from "./CalendarEventRouteSQL.js";
+export * from "./CalendarFreeBusyRouteSQL.js";
 export * from "./CalendarShareLinkRouteSQL.js";
 export * from "./ContactListRouteSQL.js";
 export * from "./ContactRouteSQL.js";

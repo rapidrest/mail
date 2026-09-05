@@ -57,6 +57,23 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
         }
     }
 
+    /**
+     * Publishes live-update notifications (see `push/MailPushRoute.ts`) for create/update/delete on this entity
+     * type. Channels are bare `folderUid`/`mailboxUid` values, matching every other permission check in this
+     * class — a webmail client subscribed to a folder it can read sees every mutation of a record scoped to it.
+     * `this.notificationUtils` is inherited from `ModelRoute` (`@Inject(NotificationUtils)` there already) —
+     * publishing is fire-and-forget (see `NotificationUtils.sendMessage()`) and never blocks or fails a request.
+     */
+    private notify(scopeUid: string | undefined, action: "create" | "update" | "delete", data: any): void {
+        /* v8 ignore else -- unreachable via real usage: every call site derives `scopeUid` from a record that
+           already passed `requirePermission()` (which throws on a falsy scope) earlier in the same method, so
+           it is always truthy by the time `notify()` runs. The `string | undefined` parameter type (matching
+           `scopeUidOf()`'s own return type) is what requires this guard to typecheck, not a real code path. */
+        if (scopeUid) {
+            this.notificationUtils?.sendMessage(scopeUid, this.modelClass.name, action, data);
+        }
+    }
+
     @Head()
     public async count(
         @Param() params: any,
@@ -88,9 +105,15 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
             await this.requirePermission(this.scopeUidOf(single), user, ACLAction.CREATE);
         }
         if (Array.isArray(obj)) {
-            return await this.doBulkCreate(obj, { req, user, ignoreACL: true });
+            const created: T[] = await this.doBulkCreate(obj, { req, user, ignoreACL: true });
+            for (const single of created) {
+                this.notify(this.scopeUidOf(single), "create", single);
+            }
+            return created;
         }
-        return await this.doCreateObject(obj, { req, user, ignoreACL: true });
+        const created: T = await this.doCreateObject(obj, { req, user, ignoreACL: true });
+        this.notify(this.scopeUidOf(created), "create", created);
+        return created;
     }
 
     @Delete("/:id")
@@ -110,6 +133,7 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
         }
         await this.requirePermission(this.scopeUidOf(existing), user, ACLAction.DELETE);
         await this.repoUtils.delete(existing.uid, { user, version, purge: purge === "true", ignoreACL: true });
+        this.notify(this.scopeUidOf(existing), "delete", { uid: existing.uid });
     }
 
     @Head("/:id")
@@ -213,7 +237,19 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
         }
 
         await this.validate(obj, { user });
-        return await this.repoUtils.update(obj, existing, { user, ignoreACL: true });
+        const updated: T = await this.repoUtils.update(obj, existing, { user, ignoreACL: true });
+
+        // Notify the record's new scope always, and its OLD scope too if this update re-parented it - a
+        // client subscribed to the folder the record just left needs to know it's gone from their view, not
+        // just that it appeared somewhere else.
+        const oldScopeUid: string | undefined = this.scopeUidOf(existing);
+        const updatedScopeUid: string | undefined = this.scopeUidOf(updated);
+        this.notify(updatedScopeUid, "update", updated);
+        if (newScopeUid !== undefined && oldScopeUid !== updatedScopeUid) {
+            this.notify(oldScopeUid, "delete", { uid: updated.uid });
+        }
+
+        return updated;
     }
 
     @Put()

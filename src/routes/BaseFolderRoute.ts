@@ -41,7 +41,16 @@ const { Get, Head, Param, Post, Query, Request, Response, User: AuthUser } = Rou
  * the owning mailbox's ACL uid, which is what wires up the inheritance described above — this can't be done
  * generically by `RepoUtils.create()`'s own default (it would parent to the `Folder` class ACL instead, which
  * is deny-all and grants nothing) — and, since a folder doesn't exist yet at create time, permission is
- * checked against the target `mailboxUid` from the request body instead.
+ * checked against the target `mailboxUid` from the request body instead. It also publishes a live-update
+ * notification (see `push/MailPushRoute.ts`) to the owning mailbox's channel, so a webmail client subscribed
+ * to a mailbox sees new folders appear without polling.
+ *
+ * KNOWN LIMITATION: `update`/`delete` (folder rename/move/removal) do NOT publish a live-update notification,
+ * unlike every mutation on the folder-scoped entities in `BaseScopedChildRoute`. Overriding them here purely to
+ * add a notify call would mean re-implementing (and re-testing) the exact ACL-delegation behavior this class's
+ * own doc comment above is careful to leave untouched by relying on `CRUDRoute`'s defaults — a real gap, but a
+ * deliberate one given how comparatively rare and low-urgency folder structural changes are next to new-mail
+ * delivery, matching this library's existing "pragmatic subset, not full fidelity" scope elsewhere.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -92,6 +101,7 @@ export abstract class BaseFolderRoute<T extends Folder> extends CRUDRoute<T> {
                 ignoreACL: true,
                 acl: { uid: instance.uid, parentUid: mailboxUid, records: [] },
             });
+            this.notificationUtils?.sendMessage(mailboxUid, this.modelClass.name, "create", created);
             results.push(created);
         }
         return Array.isArray(obj) ? results : results[0];

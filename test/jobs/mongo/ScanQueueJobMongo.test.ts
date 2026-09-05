@@ -14,7 +14,7 @@
 // calls against every *other* job's real cron schedule. Instead this drives `ConnectionManager.connect()`
 // directly, registering only the entity classes this job actually touches.
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { ACLUtils, ConnectionManager, MongoConnection, MongoRepository, ObjectFactory } from "@rapidrest/service-core";
+import { ACLUtils, ConnectionManager, MongoConnection, MongoRepository, NotificationUtils, ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
 import * as uuid from "uuid";
 import config from "../../config.js";
@@ -210,6 +210,26 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
 
         const scanResults = await scanResultRepo.find({ targetUid: messages[0].uid }).toArray();
         expect(scanResults.length).toBe(1);
+    });
+
+    it("Publishes a live-update notification to the Inbox folder's channel once a message is delivered.", async () => {
+        const sendMessageSpy = vi.spyOn(NotificationUtils.prototype, "sendMessage");
+        const blobStore = objectFactory.getInstance<any>("BlobStore")!;
+        const rawBlobKey = `raw/${uuid.v4()}`;
+        await blobStore.put(rawBlobKey, makeRawMessage());
+        await createIngestEntry({ rawBlobKey });
+
+        await job.run();
+
+        const inbox = await folderRepo.findOne({ mailboxUid, type: FolderType.INBOX } as any);
+        const messages = await messageRepo.find({ folderUid: inbox!.uid }).toArray();
+        expect(sendMessageSpy).toHaveBeenCalledWith(
+            inbox!.uid,
+            "MessageMongo",
+            "create",
+            expect.objectContaining({ uid: messages[0].uid }),
+        );
+        sendMessageSpy.mockRestore();
     });
 
     it("Defaults an attachment's filename to 'attachment' when the message provides none.", async () => {
