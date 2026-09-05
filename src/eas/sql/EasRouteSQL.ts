@@ -11,6 +11,10 @@ import { SyncCommandSQL } from "../commands/sql/SyncCommandSQL.js";
 import { SendMailCommandSQL } from "../commands/sql/SendMailCommandSQL.js";
 import { SmartForwardCommandSQL } from "../commands/sql/SmartForwardCommandSQL.js";
 import { SmartReplyCommandSQL } from "../commands/sql/SmartReplyCommandSQL.js";
+import { ItemOperationsCommandSQL } from "../commands/sql/ItemOperationsCommandSQL.js";
+import { SearchCommandSQL } from "../commands/sql/SearchCommandSQL.js";
+import { MeetingResponseCommandSQL } from "../commands/sql/MeetingResponseCommandSQL.js";
+import { SettingsCommandSQL } from "../commands/sql/SettingsCommandSQL.js";
 
 /**
  * SQL-backed concrete `BaseEasRoute`. See `EasRouteMongo.ts`'s doc comment - the same mounting pattern
@@ -28,6 +32,10 @@ export class EasRouteSQL extends BaseEasRoute<DeviceSyncStateSQL, MailboxSQL> {
         SendMailCommandSQL,
         SmartForwardCommandSQL,
         SmartReplyCommandSQL,
+        ItemOperationsCommandSQL,
+        SearchCommandSQL,
+        MeetingResponseCommandSQL,
+        SettingsCommandSQL,
         PingCommand,
     ];
 }

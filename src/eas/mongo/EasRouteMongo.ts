@@ -11,6 +11,10 @@ import { SyncCommandMongo } from "../commands/mongo/SyncCommandMongo.js";
 import { SendMailCommandMongo } from "../commands/mongo/SendMailCommandMongo.js";
 import { SmartForwardCommandMongo } from "../commands/mongo/SmartForwardCommandMongo.js";
 import { SmartReplyCommandMongo } from "../commands/mongo/SmartReplyCommandMongo.js";
+import { ItemOperationsCommandMongo } from "../commands/mongo/ItemOperationsCommandMongo.js";
+import { SearchCommandMongo } from "../commands/mongo/SearchCommandMongo.js";
+import { MeetingResponseCommandMongo } from "../commands/mongo/MeetingResponseCommandMongo.js";
+import { SettingsCommandMongo } from "../commands/mongo/SettingsCommandMongo.js";
 
 /**
  * Mongo-backed concrete `BaseEasRoute`. A deployment mounts this at the well-known EAS path via its own
@@ -29,6 +33,10 @@ export class EasRouteMongo extends BaseEasRoute<DeviceSyncStateMongo, MailboxMon
         SendMailCommandMongo,
         SmartForwardCommandMongo,
         SmartReplyCommandMongo,
+        ItemOperationsCommandMongo,
+        SearchCommandMongo,
+        MeetingResponseCommandMongo,
+        SettingsCommandMongo,
         PingCommand,
     ];
 }

@@ -19,9 +19,10 @@ import { MessageMongo } from "../../../src/models/mongo/MessageMongo.js";
 import { ContactMongo } from "../../../src/models/mongo/ContactMongo.js";
 import { CalendarEventMongo } from "../../../src/models/mongo/CalendarEventMongo.js";
 import { TaskMongo } from "../../../src/models/mongo/TaskMongo.js";
+import { AttachmentMongo } from "../../../src/models/mongo/AttachmentMongo.js";
 import { DeviceSyncStateMongo } from "../../../src/models/mongo/DeviceSyncStateMongo.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { registerTestDoubles, RecordingMailTransport } from "../../testDoubles.js";
+import { registerTestDoubles, RecordingMailTransport, InMemoryBlobStore } from "../../testDoubles.js";
 import { WbxmlEncoder } from "../../../src/eas/codec/WbxmlEncoder.js";
 import { WbxmlDecoder } from "../../../src/eas/codec/WbxmlDecoder.js";
 import { element, textElement, opaqueElement, findChild, findChildren, childText, type WbxmlElement } from "../../../src/eas/codec/WbxmlElement.js";
@@ -56,6 +57,7 @@ describe("Route:EasRouteMongo Tests", () => {
     let contactRepo: MongoRepository<ContactMongo>;
     let calendarEventRepo: MongoRepository<CalendarEventMongo>;
     let taskRepo: MongoRepository<TaskMongo>;
+    let attachmentRepo: MongoRepository<AttachmentMongo>;
     let deviceSyncStateRepo: MongoRepository<DeviceSyncStateMongo>;
     let aclRepo: MongoRepository<any>;
 
@@ -178,6 +180,37 @@ describe("Route:EasRouteMongo Tests", () => {
         );
     };
 
+    const blobStore = function (): InMemoryBlobStore {
+        return objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
+    };
+
+    /** Creates an `Attachment` record whose `blobKey` actually resolves to real content in the shared
+     * `InMemoryBlobStore` - `ItemOperationsCommand.fetchAttachment()` reads through the real store, not a
+     * bypassed shortcut. */
+    const createAttachment = async function (
+        messageUid: string,
+        folderUid: string,
+        mailboxUid: string,
+        content: Buffer,
+        data?: Partial<AttachmentMongo>,
+    ): Promise<AttachmentMongo> {
+        const blobKey = `attachments/${uuid.v4()}`;
+        await blobStore().put(blobKey, content, { contentType: "application/octet-stream" });
+        return await attachmentRepo.save(
+            new AttachmentMongo({
+                messageUid,
+                folderUid,
+                mailboxUid,
+                filename: "test.txt",
+                mimeType: "text/plain",
+                sizeBytes: content.length,
+                blobKey,
+                isInline: false,
+                ...data,
+            }),
+        );
+    };
+
     /** Posts a real WBXML-encoded request body and decodes the (also real WBXML) response back into a tree -
      * the same codec the server itself uses on both ends, per this project's testing philosophy of exercising
      * the actual wire format rather than a bypassed JSON shortcut. */
@@ -236,6 +269,7 @@ describe("Route:EasRouteMongo Tests", () => {
             contactRepo = conn.getMongoRepository("ContactMongo");
             calendarEventRepo = conn.getMongoRepository("CalendarEventMongo");
             taskRepo = conn.getMongoRepository("TaskMongo");
+            attachmentRepo = conn.getMongoRepository("AttachmentMongo");
             deviceSyncStateRepo = conn.getMongoRepository("DeviceSyncStateMongo");
         } else {
             throw new Error("Could not find mongo connection");
@@ -255,7 +289,17 @@ describe("Route:EasRouteMongo Tests", () => {
     });
 
     beforeEach(async () => {
-        for (const repo of [mailboxRepo, folderRepo, messageRepo, contactRepo, calendarEventRepo, taskRepo, deviceSyncStateRepo, aclRepo]) {
+        for (const repo of [
+            mailboxRepo,
+            folderRepo,
+            messageRepo,
+            contactRepo,
+            calendarEventRepo,
+            taskRepo,
+            attachmentRepo,
+            deviceSyncStateRepo,
+            aclRepo,
+        ]) {
             try {
                 await repo.clear();
             } catch (err: any) {
@@ -347,17 +391,18 @@ describe("Route:EasRouteMongo Tests", () => {
             expect(result.status).toBe(449);
         });
 
-        it("Allows Settings through the provisioning gate even for an unprovisioned device (but 501s - no handler registered).", async () => {
+        it("Allows Settings through the provisioning gate even for an unprovisioned device.", async () => {
             await createMailbox(owner.uid);
 
             const result = await request(server.getApplication())
                 .post(`${baseUrl}?Cmd=Settings&DeviceId=dev1`)
                 .set("Authorization", "jwt " + ownerToken);
 
-            expect(result.status).toBe(501);
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
         });
 
-        it("Returns 501 for a recognized-but-unimplemented command (Settings) once the device is already provisioned.", async () => {
+        it("Returns 501 for a recognized-but-deferred command (ResolveRecipients) once the device is already provisioned.", async () => {
             const mailbox = await createMailbox(owner.uid);
             await deviceSyncStateRepo.save(
                 new DeviceSyncStateMongo({
@@ -370,7 +415,7 @@ describe("Route:EasRouteMongo Tests", () => {
             );
 
             const result = await request(server.getApplication())
-                .post(`${baseUrl}?Cmd=Settings&DeviceId=dev1`)
+                .post(`${baseUrl}?Cmd=ResolveRecipients&DeviceId=dev1`)
                 .set("Authorization", "jwt " + ownerToken);
 
             expect(result.status).toBe(501);
@@ -1479,6 +1524,618 @@ describe("Route:EasRouteMongo Tests", () => {
             const unchanged = await messageRepo.findOne({ uid: original.uid } as any);
             expect(unchanged?.flags.answered).toBe(false);
             expect(unchanged?.flags.forwarded).toBe(false);
+        });
+    });
+
+    describe("ItemOperations command", () => {
+        it("Fetches a message's plain-text body from raw MIME when no sanitized HTML is available.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const message = await createMessage(mailbox.uid, folder.uid, { sanitizedHtmlBlobKey: undefined });
+            await blobStore().put(
+                message.bodyBlobKey,
+                Buffer.from("From: sender@example.com\r\nTo: owner@example.com\r\nSubject: Hi\r\n\r\nPlain body text."),
+                { contentType: "message/rfc822" },
+            );
+
+            const response = await postWbxml(
+                "ItemOperations",
+                "dev1",
+                element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                    element(WbxmlCodePage.ItemOperations, "Fetch", [
+                        textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                        textElement(WbxmlCodePage.AirSync, "CollectionId", folder.uid),
+                        textElement(WbxmlCodePage.AirSync, "ServerId", message.uid),
+                    ]),
+                ]),
+            );
+
+            expect(childText(response, "Status")).toBe("1");
+            const fetch = findChild(findChild(response, "Response")!, "Fetch")!;
+            expect(childText(fetch, "Status")).toBe("1");
+            expect(childText(fetch, "ServerId")).toBe(message.uid);
+            const body = findChild(findChild(fetch, "Properties")!, "Body")!;
+            expect(childText(body, "Type")).toBe("1");
+            expect(childText(body, "Data")).toBe("Plain body text.");
+        });
+
+        it("Fetches a message's sanitized HTML body when available.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const sanitizedHtmlBlobKey = `sanitized/${uuid.v4()}`;
+            await blobStore().put(sanitizedHtmlBlobKey, Buffer.from("<p>Hello HTML</p>"), { contentType: "text/html" });
+            const message = await createMessage(mailbox.uid, folder.uid, { sanitizedHtmlBlobKey });
+
+            const response = await postWbxml(
+                "ItemOperations",
+                "dev1",
+                element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                    element(WbxmlCodePage.ItemOperations, "Fetch", [
+                        textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                        textElement(WbxmlCodePage.AirSync, "ServerId", message.uid),
+                    ]),
+                ]),
+            );
+
+            const fetch = findChild(findChild(response, "Response")!, "Fetch")!;
+            const body = findChild(findChild(fetch, "Properties")!, "Body")!;
+            expect(childText(body, "Type")).toBe("2");
+            expect(childText(body, "Data")).toBe("<p>Hello HTML</p>");
+        });
+
+        it("Fetches an attachment's content by FileReference, base64-encoded inline.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const message = await createMessage(mailbox.uid, folder.uid);
+            const attachment = await createAttachment(message.uid, folder.uid, mailbox.uid, Buffer.from("attachment bytes"), {
+                mimeType: "application/pdf",
+            });
+
+            const response = await postWbxml(
+                "ItemOperations",
+                "dev1",
+                element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                    element(WbxmlCodePage.ItemOperations, "Fetch", [
+                        textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                        textElement(WbxmlCodePage.AirSyncBase, "FileReference", attachment.uid),
+                    ]),
+                ]),
+            );
+
+            const fetch = findChild(findChild(response, "Response")!, "Fetch")!;
+            expect(childText(fetch, "FileReference")).toBe(attachment.uid);
+            const properties = findChild(fetch, "Properties")!;
+            expect(childText(properties, "ContentType")).toBe("application/pdf");
+            expect(childText(properties, "Data")).toBe(Buffer.from("attachment bytes").toString("base64"));
+        });
+
+        it("Returns 404 when the referenced ServerId doesn't exist.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                            element(WbxmlCodePage.ItemOperations, "Fetch", [
+                                textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                                textElement(WbxmlCodePage.AirSync, "ServerId", uuid.v4()),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("Returns 403 when fetching a message the caller has no permission on.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const otherMailbox = await createMailbox(otherUser.uid);
+            const otherInbox = await createFolderWithAcl(otherMailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const otherMessage = await createMessage(otherMailbox.uid, otherInbox.uid);
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                            element(WbxmlCodePage.ItemOperations, "Fetch", [
+                                textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                                textElement(WbxmlCodePage.AirSync, "ServerId", otherMessage.uid),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(403);
+        });
+
+        it("Returns 400 when a Fetch has neither ServerId nor FileReference.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                            element(WbxmlCodePage.ItemOperations, "Fetch", [
+                                textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 400 when the request has no Fetch element at all.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(element(WbxmlCodePage.ItemOperations, "ItemOperations", [])));
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 400 when the request has no WBXML body at all.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken);
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 404 when the referenced FileReference doesn't exist.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                            element(WbxmlCodePage.ItemOperations, "Fetch", [
+                                textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                                textElement(WbxmlCodePage.AirSyncBase, "FileReference", uuid.v4()),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("Returns 403 when fetching an attachment the caller has no permission on.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const otherMailbox = await createMailbox(otherUser.uid);
+            const otherInbox = await createFolderWithAcl(otherMailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const otherMessage = await createMessage(otherMailbox.uid, otherInbox.uid);
+            const otherAttachment = await createAttachment(otherMessage.uid, otherInbox.uid, otherMailbox.uid, Buffer.from("secret"));
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=ItemOperations&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ItemOperations, "ItemOperations", [
+                            element(WbxmlCodePage.ItemOperations, "Fetch", [
+                                textElement(WbxmlCodePage.ItemOperations, "Store", "Mailbox"),
+                                textElement(WbxmlCodePage.AirSyncBase, "FileReference", otherAttachment.uid),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(403);
+        });
+    });
+
+    describe("Search command", () => {
+        const searchRequest = function (query: string, range?: string): WbxmlElement {
+            return element(WbxmlCodePage.Search, "Search", [
+                element(WbxmlCodePage.Search, "Store", [
+                    textElement(WbxmlCodePage.Search, "Name", "GAL"),
+                    textElement(WbxmlCodePage.Search, "Query", query),
+                    ...(range
+                        ? [element(WbxmlCodePage.Search, "Options", [textElement(WbxmlCodePage.Search, "Range", range)])]
+                        : []),
+                ]),
+            ]);
+        };
+
+        it("Finds a GAL contact by a case-insensitive substring of its display name.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Contacts", type: FolderType.CONTACTS });
+            await createContact(mailbox.uid, folder.uid, {
+                displayName: "Grace Hopper",
+                givenName: "Grace",
+                surname: "Hopper",
+                company: "US Navy",
+                jobTitle: "Rear Admiral",
+                emails: [{ address: "grace@example.com", type: ContactAddressKind.WORK }],
+                phones: [{ phoneNumber: "555-9999", type: ContactAddressKind.WORK }],
+            });
+
+            const response = await postWbxml("Search", "dev1", searchRequest("hopper"));
+
+            const store = findChild(findChild(response, "Response")!, "Store")!;
+            expect(childText(store, "Status")).toBe("1");
+            expect(childText(store, "Total")).toBe("1");
+            const properties = findChild(findChild(store, "Result")!, "Properties")!;
+            expect(childText(properties, "DisplayName")).toBe("Grace Hopper");
+            expect(childText(properties, "FirstName")).toBe("Grace");
+            expect(childText(properties, "LastName")).toBe("Hopper");
+            expect(childText(properties, "Company")).toBe("US Navy");
+            expect(childText(properties, "Title")).toBe("Rear Admiral");
+            expect(childText(properties, "EmailAddress")).toBe("grace@example.com");
+            expect(childText(properties, "Phone")).toBe("555-9999");
+        });
+
+        it("Returns Total 0 with no Result elements when nothing matches.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const response = await postWbxml("Search", "dev1", searchRequest("nobody-matches-this"));
+
+            const store = findChild(findChild(response, "Response")!, "Store")!;
+            expect(childText(store, "Total")).toBe("0");
+            expect(findChild(store, "Result")).toBeUndefined();
+        });
+
+        it("Honors a Range to page results, while Total still reflects the full match count.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Contacts", type: FolderType.CONTACTS });
+            await createContact(mailbox.uid, folder.uid, { displayName: "Ann Alpha" });
+            await createContact(mailbox.uid, folder.uid, { displayName: "Ann Beta" });
+
+            const response = await postWbxml("Search", "dev1", searchRequest("Ann", "0-0"));
+
+            const store = findChild(findChild(response, "Response")!, "Store")!;
+            expect(childText(store, "Total")).toBe("2");
+            expect(findChildren(store, "Result").length).toBe(1);
+        });
+
+        it("Returns 400 when the Store name isn't GAL.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=Search&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.Search, "Search", [
+                            element(WbxmlCodePage.Search, "Store", [
+                                textElement(WbxmlCodePage.Search, "Name", "Mailbox"),
+                                textElement(WbxmlCodePage.Search, "Query", "test"),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(400);
+        });
+    });
+
+    describe("MeetingResponse command", () => {
+        it("Accepts a meeting, updating the caller's own Attendee and returning a CalendarId.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            const event = await createCalendarEvent(mailbox.uid, folder.uid, {
+                attendees: [
+                    {
+                        address: mailbox.primarySmtpAddress,
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.NEEDS_ACTION,
+                        isOrganizer: false,
+                    },
+                ],
+            });
+
+            const response = await postWbxml(
+                "MeetingResponse",
+                "dev1",
+                element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                    element(WbxmlCodePage.MeetingResponse, "Request", [
+                        textElement(WbxmlCodePage.MeetingResponse, "UserResponse", "1"),
+                        textElement(WbxmlCodePage.MeetingResponse, "CollectionId", folder.uid),
+                        textElement(WbxmlCodePage.MeetingResponse, "RequestId", event.uid),
+                    ]),
+                ]),
+            );
+
+            const result = findChild(response, "Result")!;
+            expect(childText(result, "Status")).toBe("1");
+            expect(childText(result, "CalendarId")).toBe(event.uid);
+
+            const updated = await calendarEventRepo.findOne({ uid: event.uid } as any);
+            expect(updated?.attendees[0].responseStatus).toBe(AttendeeResponseStatus.ACCEPTED);
+        });
+
+        it("Declines a meeting, updating the Attendee but omitting CalendarId from the response.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            const event = await createCalendarEvent(mailbox.uid, folder.uid, {
+                attendees: [
+                    {
+                        address: mailbox.primarySmtpAddress,
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.NEEDS_ACTION,
+                        isOrganizer: false,
+                    },
+                ],
+            });
+
+            const response = await postWbxml(
+                "MeetingResponse",
+                "dev1",
+                element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                    element(WbxmlCodePage.MeetingResponse, "Request", [
+                        textElement(WbxmlCodePage.MeetingResponse, "UserResponse", "3"),
+                        textElement(WbxmlCodePage.MeetingResponse, "CollectionId", folder.uid),
+                        textElement(WbxmlCodePage.MeetingResponse, "RequestId", event.uid),
+                    ]),
+                ]),
+            );
+
+            const result = findChild(response, "Result")!;
+            expect(childText(result, "Status")).toBe("1");
+            expect(findChild(result, "CalendarId")).toBeUndefined();
+
+            const updated = await calendarEventRepo.findOne({ uid: event.uid } as any);
+            expect(updated?.attendees[0].responseStatus).toBe(AttendeeResponseStatus.DECLINED);
+        });
+
+        it("Returns 404 when RequestId references a calendar event that doesn't exist.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=MeetingResponse&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                            element(WbxmlCodePage.MeetingResponse, "Request", [
+                                textElement(WbxmlCodePage.MeetingResponse, "UserResponse", "1"),
+                                textElement(WbxmlCodePage.MeetingResponse, "CollectionId", "some-folder"),
+                                textElement(WbxmlCodePage.MeetingResponse, "RequestId", uuid.v4()),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("Returns 404 when the caller is not an attendee of the referenced event.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            const event = await createCalendarEvent(mailbox.uid, folder.uid, {
+                attendees: [
+                    {
+                        address: "someone-else@example.com",
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.NEEDS_ACTION,
+                        isOrganizer: false,
+                    },
+                ],
+            });
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=MeetingResponse&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                            element(WbxmlCodePage.MeetingResponse, "Request", [
+                                textElement(WbxmlCodePage.MeetingResponse, "UserResponse", "1"),
+                                textElement(WbxmlCodePage.MeetingResponse, "CollectionId", folder.uid),
+                                textElement(WbxmlCodePage.MeetingResponse, "RequestId", event.uid),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("Returns 400 when the Request is missing UserResponse.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            const event = await createCalendarEvent(mailbox.uid, folder.uid);
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=MeetingResponse&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                            element(WbxmlCodePage.MeetingResponse, "Request", [
+                                textElement(WbxmlCodePage.MeetingResponse, "CollectionId", folder.uid),
+                                textElement(WbxmlCodePage.MeetingResponse, "RequestId", event.uid),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 400 when the request has no Request element at all.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=MeetingResponse&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [])));
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 400 when the request has no WBXML body at all.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=MeetingResponse&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken);
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Only updates the matching Attendee, leaving co-attendees untouched, and matches by alias address.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await mailboxRepo.updateOne({ uid: mailbox.uid } as any, { $set: { aliasAddresses: ["alias@example.com"] } } as any);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            const event = await createCalendarEvent(mailbox.uid, folder.uid, {
+                attendees: [
+                    {
+                        address: "someone-else@example.com",
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.NEEDS_ACTION,
+                        isOrganizer: false,
+                    },
+                    {
+                        // Matches via the mailbox's alias, not its primary address.
+                        address: "alias@example.com",
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.NEEDS_ACTION,
+                        isOrganizer: false,
+                    },
+                ],
+            });
+
+            await postWbxml(
+                "MeetingResponse",
+                "dev1",
+                element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                    element(WbxmlCodePage.MeetingResponse, "Request", [
+                        textElement(WbxmlCodePage.MeetingResponse, "UserResponse", "2"),
+                        textElement(WbxmlCodePage.MeetingResponse, "CollectionId", folder.uid),
+                        textElement(WbxmlCodePage.MeetingResponse, "RequestId", event.uid),
+                    ]),
+                ]),
+            );
+
+            const updated = await calendarEventRepo.findOne({ uid: event.uid } as any);
+            expect(updated?.attendees[0].responseStatus).toBe(AttendeeResponseStatus.NEEDS_ACTION);
+            expect(updated?.attendees[1].responseStatus).toBe(AttendeeResponseStatus.TENTATIVE);
+        });
+
+        it("Returns 403 when responding to a meeting the caller has no permission on.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const otherMailbox = await createMailbox(otherUser.uid);
+            const otherCalendar = await createFolderWithAcl(otherMailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            const otherEvent = await createCalendarEvent(otherMailbox.uid, otherCalendar.uid, {
+                attendees: [
+                    {
+                        address: otherMailbox.primarySmtpAddress,
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.NEEDS_ACTION,
+                        isOrganizer: false,
+                    },
+                ],
+            });
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=MeetingResponse&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.MeetingResponse, "MeetingResponse", [
+                            element(WbxmlCodePage.MeetingResponse, "Request", [
+                                textElement(WbxmlCodePage.MeetingResponse, "UserResponse", "1"),
+                                textElement(WbxmlCodePage.MeetingResponse, "CollectionId", otherCalendar.uid),
+                                textElement(WbxmlCodePage.MeetingResponse, "RequestId", otherEvent.uid),
+                            ]),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(403);
+        });
+    });
+
+    describe("Settings command", () => {
+        it("UserInformation/Get returns the mailbox's primary and alias SMTP addresses.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await mailboxRepo.updateOne({ uid: mailbox.uid } as any, { $set: { aliasAddresses: ["alias@example.com"] } } as any);
+            await provisionDevice("dev1");
+
+            const response = await postWbxml(
+                "Settings",
+                "dev1",
+                element(WbxmlCodePage.Settings, "Settings", [
+                    element(WbxmlCodePage.Settings, "UserInformation", [element(WbxmlCodePage.Settings, "Get", [])]),
+                ]),
+            );
+
+            expect(childText(response, "Status")).toBe("1");
+            const userInfo = findChild(response, "UserInformation")!;
+            expect(childText(userInfo, "Status")).toBe("1");
+            const addresses = findChildren(findChild(userInfo, "EmailAddresses")!, "SmtpAddress").map((e) => e.text);
+            expect(addresses).toEqual([mailbox.primarySmtpAddress, "alias@example.com"]);
+        });
+
+        it("DeviceInformation/Set is acknowledged without requiring UserInformation.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const response = await postWbxml(
+                "Settings",
+                "dev1",
+                element(WbxmlCodePage.Settings, "Settings", [
+                    element(WbxmlCodePage.Settings, "DeviceInformation", [
+                        element(WbxmlCodePage.Settings, "Set", [
+                            textElement(WbxmlCodePage.Settings, "Model", "TestPhone"),
+                        ]),
+                    ]),
+                ]),
+            );
+
+            expect(childText(response, "Status")).toBe("1");
+            const deviceInfo = findChild(response, "DeviceInformation")!;
+            expect(childText(deviceInfo, "Status")).toBe("1");
+            expect(findChild(response, "UserInformation")).toBeUndefined();
         });
     });
 });
