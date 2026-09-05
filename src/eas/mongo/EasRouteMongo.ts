@@ -1,0 +1,18 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import { DeviceSyncStateMongo, MailboxMongo } from "../../mongo.js";
+import { BaseEasRoute } from "../BaseEasRoute.js";
+
+/**
+ * Mongo-backed concrete `BaseEasRoute`. A deployment mounts this at the well-known EAS path via its own
+ * trivial `@Route("/Microsoft-Server-ActiveSync")` subclass, following the same pattern
+ * `push/MailPushRoute.ts`'s doc comment describes for `BasePushRoute`.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export class EasRouteMongo extends BaseEasRoute<DeviceSyncStateMongo, MailboxMongo> {
+    protected deviceSyncStateClass: any = DeviceSyncStateMongo;
+    protected mailboxClass: any = MailboxMongo;
+}
