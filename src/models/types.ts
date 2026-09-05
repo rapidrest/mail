@@ -29,8 +29,16 @@ export enum FolderType {
  * @author Jean-Philippe Steinmetz
  */
 export interface Mailbox extends BaseEntity {
-    /** The unique identifier of the `User` (from `@rapidrest/auth`) that owns this mailbox. */
-    ownerUserUid: string;
+    /**
+     * The unique identifier of the `User` (from `@rapidrest/auth`) that owns this mailbox, if any. `undefined`
+     * for a true shared mailbox (the Exchange "shared mailbox" concept, e.g. `support@example.com`) that has
+     * no single owner — access to one of those is granted entirely via delegate `ACLRecord`s on the mailbox's
+     * own `AccessControlList` instead. Creating an ownerless mailbox is a trusted-role-only action; a regular
+     * self-service `create()` call always still makes the caller the owner. See `BaseMailboxRoute` for how
+     * `find()`/`count()` resolve visibility (owned + shared + trusted-caller-sees-all) entirely from the ACL
+     * system rather than from this field.
+     */
+    ownerUserUid?: string;
 
     /** The primary SMTP address that mail addressed to this mailbox is delivered under. */
     primarySmtpAddress: string;

@@ -2,11 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { ObjectDecorators } from "@rapidrest/core";
 import { BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
 import { Mailbox } from "../types.js";
 const { Description } = DocDecorators;
 const { DataStore, Protect } = ModelDecorators;
 const { Column, Entity, Index } = PersistenceDecorators;
+const { Nullable } = ObjectDecorators;
 
 /**
  * Implementation of the `Mailbox` interface for storage in a SQL database. If MongoDB is desired, please use
@@ -36,9 +38,13 @@ const { Column, Entity, Index } = PersistenceDecorators;
     true,
 )
 export class MailboxSQL extends BaseEntity implements Mailbox {
-    @Column()
-    @Description("The unique identifier of the `User` (from `@rapidrest/auth`) that owns this mailbox.")
-    public ownerUserUid: string = "";
+    @Column({ type: String, nullable: true })
+    @Description(
+        "The unique identifier of the `User` (from `@rapidrest/auth`) that owns this mailbox, if any. Absent " +
+            "for a true shared mailbox with no single owner — see the `Mailbox` interface doc comment.",
+    )
+    @Nullable
+    public ownerUserUid?: string = undefined;
 
     @Column()
     @Description("The primary SMTP address that mail addressed to this mailbox is delivered under.")

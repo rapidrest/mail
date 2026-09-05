@@ -39,7 +39,7 @@ describe("Mongo model default construction", () => {
     it("MailboxMongo falls back to class defaults when constructed with no data.", () => {
         const obj = new MailboxMongo();
 
-        expect(obj.ownerUserUid).toBe("");
+        expect(obj.ownerUserUid).toBeUndefined();
         expect(obj.primarySmtpAddress).toBe("");
         expect(obj.aliasAddresses).toEqual([]);
         expect(obj.displayName).toBe("");

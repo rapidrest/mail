@@ -340,6 +340,94 @@ describe("Route:MailboxMongo Tests", () => {
         expect(result.status).toBe(404);
     });
 
+    it("A caller with a delegate ACL grant (not owner) sees a shared mailbox in their list, alongside their own.", async () => {
+        await createMailboxMongo({ displayName: "Owner's own mailbox" });
+        const shared = await createMailboxMongo({ displayName: "Shared Mailbox" }, otherUser.uid);
+
+        const acl: any = await aclRepo.findOne({ uid: shared.uid } as any);
+        acl.records.push({ userOrRoleId: owner.uid, actions: [ACLAction.READ, ACLAction.LIST] });
+        await aclRepo.save(acl);
+
+        const result = await request(server.getApplication())
+            .get(baseUrl)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBe(200);
+        const names = result.body.map((m: any) => m.displayName).sort();
+        expect(names).toEqual(["Owner's own mailbox", "Shared Mailbox"]);
+    });
+
+    it("A trusted (admin) caller's list includes every mailbox, not just their own.", async () => {
+        await createMailboxMongo({ displayName: "Owner's mailbox" });
+        await createMailboxMongo({ displayName: "Other user's mailbox" }, otherUser.uid);
+
+        const result = await request(server.getApplication())
+            .get(baseUrl)
+            .set("Authorization", "jwt " + adminToken);
+
+        expect(result.status).toBe(200);
+        const names = result.body.map((m: any) => m.displayName).sort();
+        expect(names).toEqual(["Other user's mailbox", "Owner's mailbox"]);
+    });
+
+    it("A trusted (admin) caller's count includes every mailbox, not just their own.", async () => {
+        await createMailboxMongo();
+        await createMailboxMongo({}, otherUser.uid);
+
+        const result = await request(server.getApplication())
+            .head(baseUrl)
+            .set("Authorization", "jwt " + adminToken);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+        expect(result.headers["content-length"]).toBe("2");
+    });
+
+    it("A non-trusted caller's ownerUserUid is always forced to their own uid, even if the request body claims another.", async () => {
+        const obj: MailboxMongo = new MailboxMongo({
+            ownerUserUid: otherUser.uid,
+            primarySmtpAddress: `${uuid.v4()}@example.com`,
+            aliasAddresses: [],
+            displayName: "Claimed Mailbox",
+            timezone: "UTC",
+            quotaBytes: 1_000_000_000,
+            usedBytes: 0,
+        });
+
+        const result = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + ownerToken)
+            .send(obj);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+        expect(result.body.ownerUserUid).toBe(owner.uid);
+    });
+
+    it("A trusted (admin) caller can create a true ownerless shared mailbox by omitting ownerUserUid.", async () => {
+        const obj: any = {
+            primarySmtpAddress: `${uuid.v4()}@example.com`,
+            aliasAddresses: [],
+            displayName: "Shared Support Mailbox",
+            timezone: "UTC",
+            quotaBytes: 1_000_000_000,
+            usedBytes: 0,
+        };
+
+        const result = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + adminToken)
+            .send(obj);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+        expect(result.body.ownerUserUid == null).toBe(true);
+
+        // The admin who created it shouldn't be left with a stray self-grant on its ACL either.
+        const acl: any = await aclRepo.findOne({ uid: result.body.uid } as any);
+        expect(acl?.records ?? []).toEqual([]);
+    });
+
     it("An admin can still create a mailbox for themselves like any other authenticated user.", async () => {
         const obj: MailboxMongo = new MailboxMongo({
             ownerUserUid: admin.uid,

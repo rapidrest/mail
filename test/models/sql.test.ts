@@ -39,7 +39,7 @@ describe("SQL model default construction", () => {
     it("MailboxSQL falls back to class defaults when constructed with no data.", () => {
         const obj = new MailboxSQL();
 
-        expect(obj.ownerUserUid).toBe("");
+        expect(obj.ownerUserUid).toBeUndefined();
         expect(obj.primarySmtpAddress).toBe("");
         expect(obj.aliasAddresses).toEqual([]);
         expect(obj.displayName).toBe("");

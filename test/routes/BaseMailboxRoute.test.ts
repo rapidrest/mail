@@ -19,7 +19,11 @@ import { ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
 import { BaseMailboxRoute } from "../../src/routes/BaseMailboxRoute.js";
 
-class TestMailboxRoute extends BaseMailboxRoute<any> {}
+class TestMailboxRoute extends BaseMailboxRoute<any> {
+    protected async findAccessibleMailboxUids(): Promise<string[]> {
+        return [];
+    }
+}
 
 function makeRes(): any {
     return {
