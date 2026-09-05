@@ -61,6 +61,20 @@ function makeRawMessage(opts: { extraHeader?: string; attachmentMarker?: string 
     return Buffer.from(raw);
 }
 
+/** A message with an HTML body containing a `<script>` tag, and no attachments. */
+function makeHtmlRawMessage(): Buffer {
+    const raw = [
+        "From: sender@example.com",
+        "To: recipient@example.com",
+        "Subject: HTML message",
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        "<html><body><p>Hello</p><script>alert(1)</script></body></html>",
+        "",
+    ].join("\r\n");
+    return Buffer.from(raw);
+}
+
 /** A plain message with no attachments at all. */
 function makePlainRawMessage(extraHeader?: string): Buffer {
     const raw = [
@@ -235,6 +249,32 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         expect(attachments[0].filename).toBe("attachment");
     });
 
+    it("Persists the sanitized HTML body under its own blob key, stripped of <script>, separate from the raw MIME.", async () => {
+        // Regression test: `ScanPipeline.run()`'s sanitized HTML used to be computed and then discarded -
+        // nothing ever wrote it anywhere, leaving the only body representation this library persisted
+        // completely unsanitized. Confirms it's now actually stored and reachable via `sanitizedHtmlBlobKey`,
+        // distinct from `bodyBlobKey`'s untouched raw MIME (which still contains the literal <script> tag).
+        const blobStore = objectFactory.getInstance<any>("BlobStore")!;
+        const rawBlobKey = `raw/${uuid.v4()}`;
+        await blobStore.put(rawBlobKey, makeHtmlRawMessage());
+        await createIngestEntry({ rawBlobKey });
+
+        await job.run();
+
+        const inbox = await folderRepo.findOne({ mailboxUid, type: FolderType.INBOX } as any);
+        const messages = await messageRepo.find({ folderUid: inbox!.uid } as any).toArray();
+        expect(messages.length).toBe(1);
+        expect(messages[0].sanitizedHtmlBlobKey).toBeTruthy();
+        expect(messages[0].sanitizedHtmlBlobKey).not.toBe(messages[0].bodyBlobKey);
+
+        const sanitized: Buffer = await blobStore.get(messages[0].sanitizedHtmlBlobKey!);
+        expect(sanitized.toString()).not.toContain("<script>");
+        expect(sanitized.toString()).toContain("Hello");
+
+        const raw: Buffer = await blobStore.get(messages[0].bodyBlobKey);
+        expect(raw.toString()).toContain("<script>");
+    });
+
     it("Delivers a spam-verdict message to Junk, reusing an existing Junk folder without creating a duplicate.", async () => {
         const blobStore = objectFactory.getInstance<any>("BlobStore")!;
         const rawBlobKey = `raw/${uuid.v4()}`;
@@ -277,6 +317,25 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         expect(quarantineEntries.length).toBe(1);
         expect(quarantineEntries[0].reason).toBe(QuarantineReason.INFECTED);
         expect(quarantineEntries[0].rawBlobKey).toBe(rawBlobKey);
+    });
+
+    it("Quarantines a message when the AV engine errors (fails closed, not delivered unscanned), tagged with reason OTHER.", async () => {
+        const blobStore = objectFactory.getInstance<any>("BlobStore")!;
+        const rawBlobKey = `raw/${uuid.v4()}`;
+        await blobStore.put(rawBlobKey, makePlainRawMessage("X-Test-Force-Av-Error: true"));
+        const entry = await createIngestEntry({ rawBlobKey });
+
+        await job.run();
+
+        const updated = await ingestQueueRepo.findOne({ uid: entry.uid } as any);
+        expect(updated!.status).toBe(IngestStatus.DELIVERED);
+
+        const messages = await messageRepo.find({ mailboxUid } as any).toArray();
+        expect(messages.length).toBe(0);
+
+        const quarantineEntries = await quarantineEntryRepo.find({ mailboxUid } as any).toArray();
+        expect(quarantineEntries.length).toBe(1);
+        expect(quarantineEntries[0].reason).toBe(QuarantineReason.OTHER);
     });
 
     it("Marks an entry FAILED with the error message when processing throws, without crashing the whole run.", async () => {

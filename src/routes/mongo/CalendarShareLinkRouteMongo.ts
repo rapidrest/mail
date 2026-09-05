@@ -4,11 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { RepoUtils, RouteDecorators } from "@rapidrest/service-core";
 import { CalendarShareLinkMongo } from "../../mongo.js";
-import { BaseScopedChildRoute } from "../BaseScopedChildRoute.js";
+import { BaseCalendarShareLinkRoute } from "../BaseCalendarShareLinkRoute.js";
 const { Model } = RouteDecorators;
 
 @Model(CalendarShareLinkMongo)
-export class CalendarShareLinkRouteMongo extends BaseScopedChildRoute<CalendarShareLinkMongo> {
+export class CalendarShareLinkRouteMongo extends BaseCalendarShareLinkRoute<CalendarShareLinkMongo> {
     protected readonly repoUtilsClass: any = RepoUtils;
     protected readonly scopeProperty: string = "folderUid";
 }

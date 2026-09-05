@@ -121,12 +121,21 @@ export class ScanPipeline {
     }
 }
 
-/** Combines a spam verdict and an AV verdict into where the message should be routed on ingestion. */
+/**
+ * Combines a spam verdict and an AV verdict into where the message should be routed on ingestion.
+ *
+ * `AvVerdict.ERROR` and `SpamVerdict.SUSPECT` are the providers' own documented fail-closed outcomes for a
+ * scan-engine outage (see `ClamAvScanProvider.scanBuffer()`/`RspamdSpamScanProvider.scoreMessage()`) - treating
+ * them as equivalent to a clean/normal verdict here would silently deliver every message straight to the
+ * inbox, completely unscanned, for the entire duration of an AV/spam engine outage. `ERROR` quarantines
+ * (matching AV's own "treat like infected" intent); `SUSPECT` routes to Junk for human review rather than
+ * blind inbox delivery.
+ */
 export function resolveDeliveryVerdict(result: ScanPipelineResult): "deliver" | "junk" | "quarantine" {
-    if (result.av.verdict === AvVerdict.INFECTED) {
+    if (result.av.verdict === AvVerdict.INFECTED || result.av.verdict === AvVerdict.ERROR) {
         return "quarantine";
     }
-    if (result.spam.verdict === SpamVerdict.SPAM) {
+    if (result.spam.verdict === SpamVerdict.SPAM || result.spam.verdict === SpamVerdict.SUSPECT) {
         return "junk";
     }
     return "deliver";

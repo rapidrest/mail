@@ -202,6 +202,60 @@ describe("Route:CalendarShareLinkMongo Tests", () => {
         expect(acl).toBeNull();
     });
 
+    it("Always mints the token server-side, ignoring a client-supplied value entirely.", async () => {
+        // Regression test: `token` is the sole credential an anonymous consumer of this link would eventually
+        // present, so its unguessability can't depend on the client - a caller must never be able to set (or
+        // predict) it themselves.
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const clientSuppliedToken = "guessable-token-123";
+
+        const result = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({
+                token: clientSuppliedToken,
+                folderUid: folder.uid,
+                permittedActions: ["read"],
+                createdByUserUid: owner.uid,
+            });
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+        expect(result.body.token).not.toBe(clientSuppliedToken);
+        // A base64url-encoded 32-byte value is well over 40 characters - long enough to rule out a trivial
+        // fallback (e.g. an empty string or a short placeholder) without pinning the exact encoding/length.
+        expect(result.body.token.length).toBeGreaterThan(40);
+
+        // Creating a second link confirms each token is independently random, not a fixed server-side constant.
+        const second = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({ token: clientSuppliedToken, folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+        expect(second.body.token).not.toBe(result.body.token);
+    });
+
+    it("Mints an independent server-side token for each item in a bulk (array-body) create request.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+
+        const result = await request(server.getApplication())
+            .post(baseUrl)
+            .set("Authorization", "jwt " + ownerToken)
+            .send([
+                { token: "client-token-1", folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid },
+                { token: "client-token-1", folderUid: folder.uid, permittedActions: ["freebusy"], createdByUserUid: owner.uid },
+            ]);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+        expect(Array.isArray(result.body)).toBe(true);
+        expect(result.body.length).toBe(2);
+        expect(result.body[0].token).not.toBe("client-token-1");
+        expect(result.body[1].token).not.toBe("client-token-1");
+        expect(result.body[0].token).not.toBe(result.body[1].token);
+    });
+
     it("A different user cannot create a calendar share link in a folder they don't have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);

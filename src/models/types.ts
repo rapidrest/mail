@@ -113,8 +113,9 @@ export enum MessageImportance {
 }
 
 /**
- * Defines a single email message stored in a `Folder`. The raw MIME source and rendered bodies are not stored
- * inline on this record — they live in the configured `BlobStore`, referenced by `bodyBlobKey`.
+ * Defines a single email message stored in a `Folder`. The raw MIME source and sanitized HTML body are not
+ * stored inline on this record — they live in the configured `BlobStore`, referenced by
+ * `bodyBlobKey`/`sanitizedHtmlBlobKey`.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -165,8 +166,16 @@ export interface Message extends BaseEntity {
 
     receivedDate: Date;
 
-    /** The key under which the raw MIME source and rendered HTML/text bodies are stored in the `BlobStore`. */
+    /** The key under which the raw MIME source is stored in the `BlobStore`, unmodified from ingestion/send. */
     bodyBlobKey: string;
+
+    /**
+     * The key under which the message's HTML body is stored, AFTER `ScanPipeline`'s sanitization pass has run
+     * (script/active-content stripped) — set once scanning completes, absent for a not-yet-scanned draft or a
+     * message with no HTML body at all. A renderer displaying message content should always prefer this over
+     * re-deriving HTML from `bodyBlobKey`'s raw MIME directly, which is never sanitized.
+     */
+    sanitizedHtmlBlobKey?: string;
 
     /** A short plain-text preview of the message body, generated at ingestion time. */
     bodyPreview: string;

@@ -265,19 +265,37 @@ describe("resolveDeliveryVerdict() Tests", () => {
         expect(verdict).toBe("deliver");
     });
 
-    it("Routes to deliver for a SUSPECT spam verdict (not SPAM) with clean AV.", () => {
+    it("Routes to junk for a SUSPECT spam verdict (fail-closed to human review, not blind delivery) with clean AV.", () => {
         const verdict = resolveDeliveryVerdict({
             spam: { score: 3, verdict: SpamVerdict.SUSPECT, symbols: [] },
             av: { verdict: AvVerdict.CLEAN },
             attachments: [],
         });
-        expect(verdict).toBe("deliver");
+        expect(verdict).toBe("junk");
+    });
+
+    it("Routes to quarantine when the AV verdict is ERROR (scan-engine outage fails closed, not delivered unscanned).", () => {
+        const verdict = resolveDeliveryVerdict({
+            spam: { score: 0, verdict: SpamVerdict.CLEAN, symbols: [] },
+            av: { verdict: AvVerdict.ERROR },
+            attachments: [],
+        });
+        expect(verdict).toBe("quarantine");
     });
 
     it("Prioritizes quarantine over junk when both AV is infected and spam verdict is SPAM.", () => {
         const verdict = resolveDeliveryVerdict({
             spam: { score: 20, verdict: SpamVerdict.SPAM, symbols: [] },
             av: { verdict: AvVerdict.INFECTED },
+            attachments: [],
+        });
+        expect(verdict).toBe("quarantine");
+    });
+
+    it("Prioritizes quarantine (AV ERROR) over junk (SPAM) when both fail-closed conditions are present.", () => {
+        const verdict = resolveDeliveryVerdict({
+            spam: { score: 20, verdict: SpamVerdict.SPAM, symbols: [] },
+            av: { verdict: AvVerdict.ERROR },
             attachments: [],
         });
         expect(verdict).toBe("quarantine");

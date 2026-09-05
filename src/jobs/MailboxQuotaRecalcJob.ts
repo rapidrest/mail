@@ -102,8 +102,37 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
         }
     }
 
+    /**
+     * Fetches every page of `repo.find(criteria, ...)` results, not just the first. `RepoUtils.find()` caps at
+     * 100 rows per call by default (and SQL ignores `options.limit`/`options.page` entirely unless `limit`/
+     * `page` are *also* baked into the criteria object itself - see the comments on `run()`'s own `find()` call
+     * above for the full explanation) - a bare, unpaginated `find()` call here would silently recompute
+     * `usedBytes` from only the first ~100 messages/attachments, permanently understating usage for any mailbox
+     * larger than that. Confirmed as a real bug (not just a SQL-only quirk) by real-database testing: the
+     * previous unpaginated call truncated identically on both backends, since 100 is `RepoUtils.find()`'s own
+     * unconditional default, independent of which backend is in use.
+     */
+    private async findAllPages<T>(
+        repo: RepoUtils<T>,
+        criteria: Record<string, any>,
+        pageSize: number = 500,
+    ): Promise<T[]> {
+        const all: T[] = [];
+        for (let page = 0; ; page++) {
+            const batch: T[] = await repo.find(
+                { ...criteria, limit: pageSize, page } as any,
+                { ignoreACL: true, limit: pageSize, page },
+            );
+            all.push(...batch);
+            if (batch.length < pageSize) {
+                break;
+            }
+        }
+        return all;
+    }
+
     private async recalcMailbox(mailbox: MB): Promise<void> {
-        const messages: M[] = await this.messageRepo!.find({ mailboxUid: mailbox.uid }, { ignoreACL: true });
+        const messages: M[] = await this.findAllPages(this.messageRepo!, { mailboxUid: mailbox.uid });
 
         let usedBytes = 0;
         for (const message of messages) {
@@ -116,10 +145,7 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
             }
 
             if (message.hasAttachments) {
-                const attachments: A[] = await this.attachmentRepo!.find(
-                    { messageUid: message.uid },
-                    { ignoreACL: true },
-                );
+                const attachments: A[] = await this.findAllPages(this.attachmentRepo!, { messageUid: message.uid });
                 for (const attachment of attachments) {
                     usedBytes += attachment.sizeBytes;
                 }

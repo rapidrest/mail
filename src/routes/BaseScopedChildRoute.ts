@@ -196,6 +196,22 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
         await this.requirePermission(this.scopeUidOf(existing), user, ACLAction.UPDATE);
+
+        // `obj` is client-supplied and `scopeProperty` (`folderUid`/`mailboxUid`) is an ordinary, writable field
+        // on every entity this class serves - none of them mark it `@ReadOnly`, since a folder/mailbox transfer
+        // (e.g. moving a Message between folders) is legitimate functionality, not something to block outright.
+        // But the check above only establishes permission on the record's CURRENT scope; without also checking
+        // the NEW one, a caller with UPDATE access to their own folder could silently re-parent any record they
+        // can already reach into a folder/mailbox they have no access to at all (or vice versa: pull a record
+        // OUT of a folder they don't own but happen to know the uid of, into their own), completely bypassing
+        // the scope-based permission model this route family exists to enforce - equivalent to planting
+        // attacker-controlled content directly into a victim's mailbox, bypassing ingestion/scanning entirely
+        // for entities like `Message`/`Attachment`.
+        const newScopeUid: string | undefined = this.scopeUidOf(obj);
+        if (newScopeUid !== undefined && newScopeUid !== this.scopeUidOf(existing)) {
+            await this.requirePermission(newScopeUid, user, ACLAction.CREATE);
+        }
+
         await this.validate(obj, { user });
         return await this.repoUtils.update(obj, existing, { user, ignoreACL: true });
     }

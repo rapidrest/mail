@@ -25,8 +25,9 @@ const { Column, Entity, Index } = PersistenceDecorators;
 @DataStore("mongo")
 @Entity()
 @Description(
-    "Defines a single email message stored in a `Folder`. The raw MIME source and rendered bodies are not " +
-        "stored inline on this record — they live in the configured `BlobStore`, referenced by `bodyBlobKey`.",
+    "Defines a single email message stored in a `Folder`. The raw MIME source and sanitized HTML body are " +
+        "not stored inline on this record — they live in the configured `BlobStore`, referenced by " +
+        "`bodyBlobKey`/`sanitizedHtmlBlobKey`.",
 )
 @Index("message_folder", ["folderUid"])
 @Index("message_mailbox", ["mailboxUid"])
@@ -75,8 +76,16 @@ export class MessageMongo extends BaseMongoEntity implements Message {
     public receivedDate: Date = new Date();
 
     @Column()
-    @Description("The key under which the raw MIME source and rendered HTML/text bodies are stored in the `BlobStore`.")
+    @Description("The key under which the raw MIME source is stored in the `BlobStore`, unmodified from ingestion/send.")
     public bodyBlobKey: string = "";
+
+    @Column()
+    @Description(
+        "The key under which the message's HTML body is stored, after ScanPipeline's sanitization pass has " +
+            "run - absent for a not-yet-scanned draft or a message with no HTML body.",
+    )
+    @Nullable
+    public sanitizedHtmlBlobKey?: string;
 
     @Column()
     @Description("A short plain-text preview of the message body, generated at ingestion time.")
@@ -126,6 +135,7 @@ export class MessageMongo extends BaseMongoEntity implements Message {
             this.sentDate = other.sentDate !== undefined ? other.sentDate : this.sentDate;
             this.receivedDate = other.receivedDate !== undefined ? other.receivedDate : this.receivedDate;
             this.bodyBlobKey = other.bodyBlobKey !== undefined ? other.bodyBlobKey : this.bodyBlobKey;
+            this.sanitizedHtmlBlobKey = "sanitizedHtmlBlobKey" in other ? other.sanitizedHtmlBlobKey : this.sanitizedHtmlBlobKey;
             this.bodyPreview = other.bodyPreview !== undefined ? other.bodyPreview : this.bodyPreview;
             this.flags = other.flags !== undefined ? other.flags : this.flags;
             this.importance = other.importance !== undefined ? other.importance : this.importance;

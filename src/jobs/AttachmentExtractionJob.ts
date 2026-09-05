@@ -77,8 +77,12 @@ export abstract class AttachmentExtractionJob<A extends Attachment, M extends Me
             return;
         }
 
+        // `limit` must be passed both via `options` (used by the Mongo backend) *and* baked into the query
+        // object itself (all `ModelUtils.buildSearchQuerySQL` reads - it ignores `options.limit` entirely and
+        // falls back to its own default of 100 otherwise). Confirmed by real-database testing: on the SQL
+        // backend, `options.limit` alone silently caps at 100 regardless of the configured batch size.
         const pending: A[] = await this.attachmentRepo.find(
-            { extractedTextBlobKey: null },
+            { extractedTextBlobKey: null, limit: this.batchSize } as any,
             { ignoreACL: true, limit: this.batchSize },
         );
 

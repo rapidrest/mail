@@ -200,6 +200,31 @@ describe("MailboxQuotaRecalcJobMongo Tests (real DB + DI)", () => {
         expect(updated!.usedBytes).toBe(300);
     });
 
+    it("Sums ALL messages in a mailbox, not just the first page, when it has more than one page's worth.", async () => {
+        // `RepoUtils.find()` defaults to a 100-row cap when no pagination is requested - `recalcMailbox()` used
+        // to call it unpaginated, silently truncating usedBytes to only the first ~100 messages for any larger
+        // mailbox. Uses a small page size (10) via a stubbed default so 25 messages genuinely spans multiple
+        // pages without the test needing to create 100+ real documents.
+        const findAllPages = (job as any).findAllPages.bind(job);
+        const pageSizeSpy = vi
+            .spyOn(job as any, "findAllPages")
+            .mockImplementation((repo: any, criteria: any) => findAllPages(repo, criteria, 10));
+        const blobStore = objectFactory.getInstance<any>("BlobStore")!;
+        const bodyKey = `body/${uuid.v4()}`;
+        await blobStore.put(bodyKey, Buffer.alloc(10));
+        const mailbox = await createMailbox({ usedBytes: 0 });
+        const messageCount = 25;
+        for (let i = 0; i < messageCount; i++) {
+            await createMessage(mailbox.uid, { bodyBlobKey: bodyKey, hasAttachments: false });
+        }
+
+        await job.run();
+
+        const updated = await mailboxRepo.findOne({ uid: mailbox.uid } as any);
+        expect(updated!.usedBytes).toBe(messageCount * 10);
+        pageSizeSpy.mockRestore();
+    });
+
     it("Bounds how many mailboxes are processed per run to the configured batch size.", async () => {
         (job as any).batchSize = 2;
         const bodyKey = `body/${uuid.v4()}`;

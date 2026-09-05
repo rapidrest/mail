@@ -100,6 +100,19 @@ describe("Route:MailIngestRouteSQL Tests", () => {
         expect(result.status).toBe(404);
     });
 
+    it("Treats '%'/'_' in the rcpt address as literal characters, not SQL LIKE wildcards, when matching aliases.", async () => {
+        // Alias lookup on SQL is implemented via a substring LIKE match against a serialized JSON column (see
+        // `MailIngestRouteSQL.aliasQueryValue()`). Without escaping, a `_` (SQL "match any one character"
+        // wildcard) in the rcpt address would let "b_b@example.com" falsely match a stored alias
+        // "bob@example.com" - enabling blind alias enumeration and mis-delivery. Confirm the literal
+        // (non-matching) interpretation wins instead.
+        await createMailbox({ aliasAddresses: ["bob@example.com"] });
+        const result = await request(server.getApplication())
+            .get(`${baseUrl}/resolve?rcpt=b_b@example.com`)
+            .set("Authorization", `Bearer ${secret}`);
+        expect(result.status).toBe(404);
+    });
+
     it("Rejects a deliver request without the internal bearer secret.", async () => {
         const result = await request(server.getApplication())
             .post(`${baseUrl}/deliver`)

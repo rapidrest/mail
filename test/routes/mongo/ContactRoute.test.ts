@@ -380,6 +380,38 @@ describe("Route:ContactMongo Tests", () => {
         expect(result.status).toBe(403);
     });
 
+    it("Owner cannot re-parent a contact into a folder they don't have access to (folderUid change is permission-checked against the NEW scope, not just the old one).", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const contact = await createContact(mailbox.uid, folder.uid);
+        const otherMailbox = await createMailbox(otherUser.uid);
+        const otherFolder = await createFolder(otherMailbox.uid);
+
+        const result = await request(server.getApplication())
+            .put(`${baseUrl}/${contact.uid}`)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({ uid: contact.uid, version: contact.version, folderUid: otherFolder.uid });
+
+        expect(result.status).toBe(403);
+        const existing = await contactRepo.findOne({ uid: contact.uid } as any);
+        expect(existing!.folderUid).toBe(folder.uid);
+    });
+
+    it("Owner can re-parent a contact into another folder of their own they DO have access to.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const destinationFolder = await createFolder(mailbox.uid);
+        const contact = await createContact(mailbox.uid, folder.uid);
+
+        const result = await request(server.getApplication())
+            .put(`${baseUrl}/${contact.uid}`)
+            .set("Authorization", "jwt " + ownerToken)
+            .send({ uid: contact.uid, version: contact.version, folderUid: destinationFolder.uid });
+
+        expect(result.status).toBe(200);
+        expect(result.body.folderUid).toBe(destinationFolder.uid);
+    });
+
     it("Owner can delete a contact they have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);

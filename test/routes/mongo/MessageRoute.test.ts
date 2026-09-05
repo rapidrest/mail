@@ -232,6 +232,36 @@ describe("Route:MessageMongo Tests", () => {
         expect(transport.sent[0].envelopeTo).toEqual(["recipient@example.com"]);
     });
 
+    it("Sending an HTML draft persists its sanitized HTML under sanitizedHtmlBlobKey, separate from the raw MIME.", async () => {
+        // Regression test: `scanResult.sanitizedHtml` used to be computed by ScanPipeline and then discarded on
+        // send, just as on ingestion - confirms it's now actually stored.
+        const mailbox = await createMailbox(owner.uid);
+        const draftsFolder = await createFolder(mailbox.uid, FolderType.DRAFTS);
+        const blobStore: InMemoryBlobStore = objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
+        const bodyBlobKey = `bodies/${uuid.v4()}`;
+        await blobStore.put(
+            bodyBlobKey,
+            Buffer.from(
+                "From: owner@example.com\r\nTo: recipient@example.com\r\nSubject: Hi\r\nContent-Type: text/html\r\n\r\n" +
+                    "<html><body><p>Hello</p><script>alert(1)</script></body></html>\r\n",
+            ),
+        );
+        const message = await createMessage(mailbox.uid, draftsFolder.uid, { bodyBlobKey });
+
+        const result = await request(server.getApplication())
+            .post(`${baseUrl}/${message.uid}/send`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+        expect(result.body.sanitizedHtmlBlobKey).toBeTruthy();
+        expect(result.body.sanitizedHtmlBlobKey).not.toBe(result.body.bodyBlobKey);
+
+        const sanitized: Buffer = await blobStore.get(result.body.sanitizedHtmlBlobKey);
+        expect(sanitized.toString()).not.toContain("<script>");
+        expect(sanitized.toString()).toContain("Hello");
+    });
+
     it("Sending a second clean draft reuses the already-resolved Sent Items folder (folderRepo cache).", async () => {
         const mailbox = await createMailbox(owner.uid);
         const draftsFolder = await createFolder(mailbox.uid, FolderType.DRAFTS);

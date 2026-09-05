@@ -51,6 +51,20 @@ function makeRawMessage(opts: { extraHeader?: string; attachmentMarker?: string 
     return Buffer.from(raw);
 }
 
+/** A message with an HTML body containing a `<script>` tag, and no attachments. */
+function makeHtmlRawMessage(): Buffer {
+    const raw = [
+        "From: sender@example.com",
+        "To: recipient@example.com",
+        "Subject: HTML message",
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        "<html><body><p>Hello</p><script>alert(1)</script></body></html>",
+        "",
+    ].join("\r\n");
+    return Buffer.from(raw);
+}
+
 /** A plain message with no attachments at all. */
 function makePlainRawMessage(extraHeader?: string): Buffer {
     const raw = [
@@ -220,6 +234,28 @@ describe("ScanQueueJobSQL Tests (real DB + DI)", () => {
         expect(attachments[0].filename).toBe("attachment");
     });
 
+    it("Persists the sanitized HTML body under its own blob key, stripped of <script>, separate from the raw MIME.", async () => {
+        const blobStore = objectFactory.getInstance<any>("BlobStore")!;
+        const rawBlobKey = `raw/${uuid.v4()}`;
+        await blobStore.put(rawBlobKey, makeHtmlRawMessage());
+        await createIngestEntry({ rawBlobKey });
+
+        await job.run();
+
+        const inbox = await folderRepo.findOne({ where: { mailboxUid, type: FolderType.INBOX } });
+        const messages = await messageRepo.find({ where: { folderUid: inbox!.uid } });
+        expect(messages.length).toBe(1);
+        expect(messages[0].sanitizedHtmlBlobKey).toBeTruthy();
+        expect(messages[0].sanitizedHtmlBlobKey).not.toBe(messages[0].bodyBlobKey);
+
+        const sanitized: Buffer = await blobStore.get(messages[0].sanitizedHtmlBlobKey!);
+        expect(sanitized.toString()).not.toContain("<script>");
+        expect(sanitized.toString()).toContain("Hello");
+
+        const raw: Buffer = await blobStore.get(messages[0].bodyBlobKey);
+        expect(raw.toString()).toContain("<script>");
+    });
+
     it("Delivers a spam-verdict message to Junk, reusing an existing Junk folder without creating a duplicate.", async () => {
         const blobStore = objectFactory.getInstance<any>("BlobStore")!;
         const rawBlobKey = `raw/${uuid.v4()}`;
@@ -262,6 +298,25 @@ describe("ScanQueueJobSQL Tests (real DB + DI)", () => {
         expect(quarantineEntries.length).toBe(1);
         expect(quarantineEntries[0].reason).toBe(QuarantineReason.INFECTED);
         expect(quarantineEntries[0].rawBlobKey).toBe(rawBlobKey);
+    });
+
+    it("Quarantines a message when the AV engine errors (fails closed, not delivered unscanned), tagged with reason OTHER.", async () => {
+        const blobStore = objectFactory.getInstance<any>("BlobStore")!;
+        const rawBlobKey = `raw/${uuid.v4()}`;
+        await blobStore.put(rawBlobKey, makePlainRawMessage("X-Test-Force-Av-Error: true"));
+        const entry = await createIngestEntry({ rawBlobKey });
+
+        await job.run();
+
+        const updated = await ingestQueueRepo.findOne({ where: { uid: entry.uid } });
+        expect(updated!.status).toBe(IngestStatus.DELIVERED);
+
+        const messages = await messageRepo.find({ where: { mailboxUid } });
+        expect(messages.length).toBe(0);
+
+        const quarantineEntries = await quarantineEntryRepo.find({ where: { mailboxUid } });
+        expect(quarantineEntries.length).toBe(1);
+        expect(quarantineEntries[0].reason).toBe(QuarantineReason.OTHER);
     });
 
     it("Marks an entry FAILED with the error message when processing throws, without crashing the whole run.", async () => {

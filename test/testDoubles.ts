@@ -114,10 +114,11 @@ export class AlwaysCleanSpamScanProvider implements SpamScanProvider {
 }
 
 /**
- * An `AvScanProvider` that reports content as clean unless it contains the marker string
- * `"X-Test-Force-Infected: true"`, in which case it reports INFECTED. Lets a test exercise a real
- * `ScanPipeline`'s/`ScanQueueJob`'s infected-verdict (quarantine) path via genuine content - by including
- * that marker in the raw message or an attachment's bytes - rather than needing a mocked AvScanProvider.
+ * An `AvScanProvider` that reports content as clean unless it contains one of two marker strings:
+ * `"X-Test-Force-Infected: true"` (reports INFECTED) or `"X-Test-Force-Av-Error: true"` (reports ERROR, the
+ * providers' own documented fail-closed outcome for a scan-engine outage). Lets a test exercise a real
+ * `ScanPipeline`'s/`ScanQueueJob`'s quarantine path via genuine content - by including the marker in the raw
+ * message or an attachment's bytes - rather than needing a mocked AvScanProvider.
  */
 export class AlwaysCleanAvScanProvider implements AvScanProvider {
     public readonly name: string = "always-clean";
@@ -125,6 +126,9 @@ export class AlwaysCleanAvScanProvider implements AvScanProvider {
     public async scanBuffer(content: Buffer, _filename?: string): Promise<AvScanResult> {
         if (content.includes("X-Test-Force-Infected: true")) {
             return { verdict: AvVerdict.INFECTED, signatureName: "Test-Signature" };
+        }
+        if (content.includes("X-Test-Force-Av-Error: true")) {
+            return { verdict: AvVerdict.ERROR };
         }
         return { verdict: AvVerdict.CLEAN };
     }

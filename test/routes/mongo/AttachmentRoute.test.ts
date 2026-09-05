@@ -9,8 +9,9 @@ import { JWTUtils, Logger } from "@rapidrest/core";
 import * as uuid from "uuid";
 import { MailboxMongo } from "../../../src/models/mongo/MailboxMongo.js";
 import { FolderMongo } from "../../../src/models/mongo/FolderMongo.js";
+import { MessageMongo } from "../../../src/models/mongo/MessageMongo.js";
 import { AttachmentMongo } from "../../../src/models/mongo/AttachmentMongo.js";
-import { FolderType } from "../../../src/models/types.js";
+import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { registerTestDoubles, InMemoryBlobStore } from "../../testDoubles.js";
 
@@ -28,6 +29,7 @@ describe("Route:AttachmentMongo Tests", () => {
     const baseUrl = "/mongo/attachments";
     let mailboxRepo: MongoRepository<MailboxMongo>;
     let folderRepo: MongoRepository<FolderMongo>;
+    let messageRepo: MongoRepository<MessageMongo>;
     let attachmentRepo: MongoRepository<AttachmentMongo>;
     let aclRepo: MongoRepository<any>;
 
@@ -79,6 +81,27 @@ describe("Route:AttachmentMongo Tests", () => {
         return result;
     };
 
+    const createMessage = async function (mailboxUid: string, folderUid: string, data?: any): Promise<MessageMongo> {
+        const obj: MessageMongo = new MessageMongo({
+            mailboxUid,
+            folderUid,
+            messageId: `${uuid.v4()}@example.com`,
+            subject: "Test Subject",
+            from: { address: "owner@example.com", type: RecipientType.TO },
+            recipients: [{ address: "recipient@example.com", type: RecipientType.TO }],
+            sentDate: new Date(),
+            receivedDate: new Date(),
+            bodyBlobKey: `bodies/${uuid.v4()}`,
+            bodyPreview: "Hello",
+            flags: { read: false, flagged: false, answered: false, forwarded: false },
+            importance: MessageImportance.NORMAL,
+            references: [],
+            hasAttachments: false,
+            ...data,
+        });
+        return await messageRepo.save(obj);
+    };
+
     const createAttachment = async function (mailboxUid: string, folderUid: string, data?: any): Promise<AttachmentMongo> {
         const blobStore: InMemoryBlobStore = objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
         const blobKey = `attachments/${uuid.v4()}`;
@@ -111,6 +134,7 @@ describe("Route:AttachmentMongo Tests", () => {
         if (conn instanceof MongoConnection) {
             mailboxRepo = conn.getMongoRepository("MailboxMongo");
             folderRepo = conn.getMongoRepository("FolderMongo");
+            messageRepo = conn.getMongoRepository("MessageMongo");
             attachmentRepo = conn.getMongoRepository("AttachmentMongo");
         } else {
             throw new Error("Could not find mongo connection");
@@ -124,7 +148,7 @@ describe("Route:AttachmentMongo Tests", () => {
     });
 
     beforeEach(async () => {
-        for (const repo of [mailboxRepo, folderRepo, attachmentRepo]) {
+        for (const repo of [mailboxRepo, folderRepo, messageRepo, attachmentRepo]) {
             try {
                 await repo.clear();
             } catch (err: any) {
@@ -135,15 +159,13 @@ describe("Route:AttachmentMongo Tests", () => {
         }
     });
 
-    it("Owner can upload an attachment to a folder they have access to.", async () => {
+    it("Owner can upload an attachment to a message in a folder they have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
 
         const result = await request(server.getApplication())
-            .post(
-                `${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}&filename=test.txt&mimeType=text/plain`,
-            )
+            .post(`${baseUrl}/upload?messageUid=${message.uid}&filename=test.txt&mimeType=text/plain`)
             .set("Authorization", "jwt " + ownerToken)
             .set("Content-Type", "application/octet-stream")
             .send(Buffer.from("hello world"));
@@ -152,6 +174,9 @@ describe("Route:AttachmentMongo Tests", () => {
         expect(result.status).toBeLessThan(300);
         expect(result.body.filename).toBe("test.txt");
         expect(result.body.sizeBytes).toBe(11);
+        // folderUid/mailboxUid are always derived server-side from the message, never from client input.
+        expect(result.body.folderUid).toBe(folder.uid);
+        expect(result.body.mailboxUid).toBe(mailbox.uid);
 
         const blobStore: InMemoryBlobStore = objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
         const stored: Buffer = await blobStore.get(result.body.blobKey);
@@ -161,10 +186,20 @@ describe("Route:AttachmentMongo Tests", () => {
     it("Rejects an upload missing a required query parameter (e.g. filename).", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
 
         const result = await request(server.getApplication())
-            .post(`${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}`)
+            .post(`${baseUrl}/upload?messageUid=${message.uid}`)
+            .set("Authorization", "jwt " + ownerToken)
+            .set("Content-Type", "application/octet-stream")
+            .send(Buffer.from("hello world"));
+
+        expect(result.status).toBe(400);
+    });
+
+    it("Rejects an upload whose messageUid doesn't correspond to any real message.", async () => {
+        const result = await request(server.getApplication())
+            .post(`${baseUrl}/upload?messageUid=${uuid.v4()}&filename=test.txt&mimeType=text/plain`)
             .set("Authorization", "jwt " + ownerToken)
             .set("Content-Type", "application/octet-stream")
             .send(Buffer.from("hello world"));
@@ -175,11 +210,11 @@ describe("Route:AttachmentMongo Tests", () => {
     it("Uses the first value of mimeType/contentId when the client repeats the query parameter (arriving as an array).", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
 
         const result = await request(server.getApplication())
             .post(
-                `${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}` +
+                `${baseUrl}/upload?messageUid=${message.uid}` +
                     `&filename=test.txt&mimeType=text/plain&mimeType=text/html&contentId=cid-1&contentId=cid-2`,
             )
             .set("Authorization", "jwt " + ownerToken)
@@ -195,12 +230,10 @@ describe("Route:AttachmentMongo Tests", () => {
     it("Falls back to application/octet-stream when mimeType is omitted entirely.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
 
         const result = await request(server.getApplication())
-            .post(
-                `${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}&filename=test.txt`,
-            )
+            .post(`${baseUrl}/upload?messageUid=${message.uid}&filename=test.txt`)
             .set("Authorization", "jwt " + ownerToken)
             .set("Content-Type", "application/octet-stream")
             .send(Buffer.from("hello world"));
@@ -210,16 +243,39 @@ describe("Route:AttachmentMongo Tests", () => {
         expect(result.body.mimeType).toBe("application/octet-stream");
     });
 
-    it("A different user cannot upload an attachment to a folder they don't have access to.", async () => {
+    it("A different user cannot upload an attachment to a message in a folder they don't have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
+
+        const result = await request(server.getApplication())
+            .post(`${baseUrl}/upload?messageUid=${message.uid}&filename=test.txt&mimeType=text/plain`)
+            .set("Authorization", "jwt " + otherUserToken)
+            .set("Content-Type", "application/octet-stream")
+            .send(Buffer.from("hello world"));
+
+        expect(result.status).toBe(403);
+    });
+
+    it("Cannot upload an attachment by supplying a spoofed folderUid/mailboxUid for a message in another mailbox (cross-mailbox attachment planting).", async () => {
+        // Regression test: `upload()` used to trust client-supplied folderUid/mailboxUid outright, only
+        // checking CREATE permission against the (attacker-controlled) folderUid value - letting a caller with
+        // access to their OWN folder attach content to a `messageUid` belonging to a completely different
+        // mailbox by simply asserting whatever folderUid/mailboxUid they liked. Confirms the caller's own
+        // folder/mailbox uids, even though otherwise valid and CREATE-permitted, have no effect: only the
+        // ownership of the target message (resolved server-side) is what's checked.
+        const victimMailbox = await createMailbox(otherUser.uid);
+        const victimFolder = await createFolder(victimMailbox.uid);
+        const victimMessage = await createMessage(victimMailbox.uid, victimFolder.uid);
+        const attackerMailbox = await createMailbox(owner.uid);
+        const attackerFolder = await createFolder(attackerMailbox.uid);
 
         const result = await request(server.getApplication())
             .post(
-                `${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}&filename=test.txt&mimeType=text/plain`,
+                `${baseUrl}/upload?messageUid=${victimMessage.uid}&folderUid=${attackerFolder.uid}` +
+                    `&mailboxUid=${attackerMailbox.uid}&filename=test.txt&mimeType=text/plain`,
             )
-            .set("Authorization", "jwt " + otherUserToken)
+            .set("Authorization", "jwt " + ownerToken)
             .set("Content-Type", "application/octet-stream")
             .send(Buffer.from("hello world"));
 

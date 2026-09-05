@@ -69,7 +69,15 @@ export abstract class MeetingSchedulingJob<CE extends CalendarEvent> extends Bac
         // `attendees.length > 0` can't be pushed into the shared `find()` query DSL (array-length queries are
         // backend-specific), so this fetches a batch and filters in-process, same as the other simplicity
         // trade-offs this job's siblings make.
-        const candidates: CE[] = await this.calendarEventRepo.find({}, { ignoreACL: true, limit: this.batchSize });
+        //
+        // `limit` must be passed both via `options` (used by the Mongo backend) *and* baked into the query
+        // object itself (all `ModelUtils.buildSearchQuerySQL` reads - it ignores `options.limit` entirely and
+        // falls back to its own default of 100 otherwise). Confirmed by real-database testing: on the SQL
+        // backend, `options.limit` alone silently caps at 100 regardless of the configured batch size.
+        const candidates: CE[] = await this.calendarEventRepo.find(
+            { limit: this.batchSize } as any,
+            { ignoreACL: true, limit: this.batchSize },
+        );
 
         let needingInvite = 0;
         for (const event of candidates) {

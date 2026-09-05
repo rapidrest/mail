@@ -14,7 +14,7 @@ docs/reference
 node_modules/
 temp/
 tmp*
-rrst-test
+rrst-test*
 mongomemory-*-test
 test\.dir\.copy/
 test\.dir/

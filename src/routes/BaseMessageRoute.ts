@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import * as crypto from "crypto";
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import {
     ACLAction,
@@ -114,8 +115,25 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
         );
         const flags: MessageFlags = { ...message.flags, read: true };
 
+        // See `ScanQueueJob.processEntry()`'s equivalent comment: `scanResult.sanitizedHtml` must be persisted
+        // under its own blob key (never inline into `bodyBlobKey`, which stays the untouched composed source)
+        // or the sanitization pass computed above is silently discarded with no consumer ever able to read it.
+        let sanitizedHtmlBlobKey: string | undefined = (message as any).sanitizedHtmlBlobKey;
+        if (scanResult.sanitizedHtml !== undefined) {
+            sanitizedHtmlBlobKey = `sanitized/${crypto.randomUUID()}`;
+            await this.blobStore.put(sanitizedHtmlBlobKey, Buffer.from(scanResult.sanitizedHtml, "utf-8"), {
+                contentType: "text/html",
+            });
+        }
+
         return await this.repoUtils.update(
-            { uid: message.uid, version: (message as any).version, folderUid: sentFolder.uid, flags } as any,
+            {
+                uid: message.uid,
+                version: (message as any).version,
+                folderUid: sentFolder.uid,
+                flags,
+                sanitizedHtmlBlobKey,
+            } as any,
             message,
             { user, ignoreACL: true },
         );

@@ -117,8 +117,12 @@ export abstract class ScanQueueJob<
     }
 
     public async run(): Promise<void> {
+        // `limit` must be passed both via `options` (used by the Mongo backend) *and* baked into the query
+        // object itself (all `ModelUtils.buildSearchQuerySQL` reads - it ignores `options.limit` entirely and
+        // falls back to its own default of 100 otherwise). Confirmed by real-database testing: on the SQL
+        // backend, `options.limit` alone silently caps at 100 regardless of the configured batch size.
         const pending: Q[] = await this.ingestQueueRepo!.find(
-            { status: IngestStatus.PENDING },
+            { status: IngestStatus.PENDING, limit: this.batchSize } as any,
             { ignoreACL: true, limit: this.batchSize },
         );
 
@@ -198,6 +202,20 @@ export abstract class ScanQueueJob<
                 verdict === "junk" ? FolderType.JUNK : FolderType.INBOX,
             );
 
+            // `ScanPipeline.run()`'s sanitized HTML (script/active-content stripped) is stored under its own
+            // blob key, separate from `bodyBlobKey`'s raw MIME - `bodyBlobKey` must stay exactly what was
+            // ingested/sent (the send path and any future "view original" feature need the untouched bytes),
+            // so the sanitization pass would otherwise be computed and then silently discarded with no
+            // consumer ever able to read it, leaving the only body representation this library persists
+            // completely unsanitized.
+            let sanitizedHtmlBlobKey: string | undefined;
+            if (result.sanitizedHtml !== undefined) {
+                sanitizedHtmlBlobKey = `sanitized/${crypto.randomUUID()}`;
+                await this.blobStore!.put(sanitizedHtmlBlobKey, Buffer.from(result.sanitizedHtml, "utf-8"), {
+                    contentType: "text/html",
+                });
+            }
+
             const message: M = await this.messageRepo!.create(
                 new this.messageClass({
                     uid: targetUid,
@@ -210,6 +228,7 @@ export abstract class ScanQueueJob<
                     sentDate: new Date(),
                     receivedDate: new Date(),
                     bodyBlobKey: entry.rawBlobKey,
+                    sanitizedHtmlBlobKey,
                     bodyPreview: "",
                     flags: { read: false, flagged: false, answered: false, forwarded: false },
                     importance: MessageImportance.NORMAL,

@@ -4,11 +4,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { RepoUtils, RouteDecorators } from "@rapidrest/service-core";
 import { CalendarShareLinkSQL } from "../../sql.js";
-import { BaseScopedChildRoute } from "../BaseScopedChildRoute.js";
+import { BaseCalendarShareLinkRoute } from "../BaseCalendarShareLinkRoute.js";
 const { Model } = RouteDecorators;
 
 @Model(CalendarShareLinkSQL)
-export class CalendarShareLinkRouteSQL extends BaseScopedChildRoute<CalendarShareLinkSQL> {
+export class CalendarShareLinkRouteSQL extends BaseCalendarShareLinkRoute<CalendarShareLinkSQL> {
     protected readonly repoUtilsClass: any = RepoUtils;
     protected readonly scopeProperty: string = "folderUid";
 }

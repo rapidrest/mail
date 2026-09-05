@@ -81,8 +81,19 @@ export abstract class CalendarReminderJob<CE extends CalendarEvent> extends Back
         // by comparing each candidate's computed reminder fire time against [now, windowEnd].
         const lookaheadEnd: Date = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
+        // `limit` must be passed both via `options` (used by the Mongo backend) *and* baked into the query
+        // object itself (all `ModelUtils.buildSearchQuerySQL` reads - it ignores `options.limit` entirely and
+        // falls back to its own default of 100 otherwise). Confirmed by real-database testing: on the SQL
+        // backend, `options.limit` alone silently caps at 100 regardless of the configured batch size - and
+        // since this job's own default `batch_size` (200) already exceeds that fallback, this was a live bug
+        // on every SQL deployment out of the box, not just a high-`batch_size` edge case.
+        //
+        // `sort: "startDate"` (ascending) ensures that when the candidate set IS truncated at `batchSize`, the
+        // soonest-due events are the ones kept - without it, truncation could arbitrarily drop an event whose
+        // reminder is due imminently in favor of one due much later, silently skipping (and, per this job's own
+        // documented "no persisted already-sent flag" limitation, never retrying) that reminder.
         const candidates: CE[] = await this.calendarEventRepo.find(
-            { startDate: `gte(${now.toISOString()})` },
+            { startDate: `gte(${now.toISOString()})`, limit: this.batchSize, sort: "startDate" } as any,
             { ignoreACL: true, limit: this.batchSize },
         );
 

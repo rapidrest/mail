@@ -4,10 +4,19 @@
 ///////////////////////////////////////////////////////////////////////////////
 import * as crypto from "crypto";
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
-import { ACLAction, ApiErrorMessages, ApiErrors, DocDecorators, HttpRequest, HttpResponse, RouteDecorators } from "@rapidrest/service-core";
+import {
+    ACLAction,
+    ApiErrorMessages,
+    ApiErrors,
+    DocDecorators,
+    HttpRequest,
+    HttpResponse,
+    RepoUtils,
+    RouteDecorators,
+} from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
 import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
-import { Attachment } from "../models/types.js";
+import { Attachment, Message } from "../models/types.js";
 const { Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Get, Param, Post, Request, Response, User: AuthUser } = RouteDecorators;
@@ -22,11 +31,26 @@ const { Get, Param, Post, Request, Response, User: AuthUser } = RouteDecorators;
  *
  * @author Jean-Philippe Steinmetz
  */
-export abstract class BaseAttachmentRoute<T extends Attachment> extends BaseScopedChildRoute<T> {
+export abstract class BaseAttachmentRoute<T extends Attachment, M extends Message = Message> extends BaseScopedChildRoute<T> {
     protected readonly scopeProperty: string = "folderUid";
+
+    /** The class of the owning `Message` entity, supplied by the Mongo/SQL concrete subclass. */
+    protected abstract messageClass: any;
+
+    private messageRepo?: RepoUtils<M>;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
+
+    private async getMessageRepo(): Promise<RepoUtils<M>> {
+        if (!this.messageRepo) {
+            this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+                name: this.messageClass.name,
+                args: [this.messageClass],
+            });
+        }
+        return this.messageRepo;
+    }
 
     @Summary("Upload attachment")
     @Description("Stores the request body as a new attachment's binary content and creates its metadata record.")
@@ -38,29 +62,32 @@ export abstract class BaseAttachmentRoute<T extends Attachment> extends BaseScop
         }
 
         const messageUid: string | string[] | undefined = req.query["messageUid"];
-        const folderUid: string | string[] | undefined = req.query["folderUid"];
-        const mailboxUid: string | string[] | undefined = req.query["mailboxUid"];
         const filename: string | string[] | undefined = req.query["filename"];
         const mimeType: string | string[] | undefined = req.query["mimeType"];
         const isInline: boolean = req.query["isInline"] === "true";
         const contentId: string | string[] | undefined = req.query["contentId"];
         const raw: Buffer | undefined = req.rawBody;
 
-        if (
-            !raw ||
-            raw.length === 0 ||
-            Array.isArray(messageUid) ||
-            !messageUid ||
-            Array.isArray(folderUid) ||
-            !folderUid ||
-            Array.isArray(mailboxUid) ||
-            !mailboxUid ||
-            Array.isArray(filename) ||
-            !filename
-        ) {
+        if (!raw || raw.length === 0 || Array.isArray(messageUid) || !messageUid || Array.isArray(filename) || !filename) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
-        if (!(await this.aclUtils!.hasPermission(user, folderUid, ACLAction.CREATE))) {
+
+        // `folderUid`/`mailboxUid` are ALWAYS derived from the owning `Message` record here, never taken from
+        // the client — `Attachment.folderUid`/`mailboxUid`'s own doc comment describes them as "denormalized
+        // from that Message", and trusting client-supplied values for them (as this route previously did) let
+        // any caller with CREATE access to ANY folder they own attach content to a `messageUid` belonging to a
+        // completely different mailbox, by simply asserting whatever `folderUid`/`mailboxUid` they liked — a
+        // cross-mailbox attachment-planting and quota-poisoning primitive (`MailboxQuotaRecalcJob.
+        // recalcMailbox()` sums `Attachment.find({ messageUid })` for every message, with no mailbox check of
+        // its own). Resolving the message server-side and checking permission against *its* `folderUid` closes
+        // that gap entirely: an attacker can no longer create an attachment against a message they don't have
+        // UPDATE access to, regardless of what folder/mailbox uids they supply.
+        const messageRepo: RepoUtils<M> = await this.getMessageRepo();
+        const message: M | undefined = await messageRepo.findOne(messageUid, { ignoreACL: true });
+        if (!message) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
+        }
+        if (!(await this.aclUtils!.hasPermission(user, message.folderUid, ACLAction.UPDATE))) {
             throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
         }
 
@@ -72,8 +99,8 @@ export abstract class BaseAttachmentRoute<T extends Attachment> extends BaseScop
         return await this.doCreateObject(
             {
                 messageUid,
-                folderUid,
-                mailboxUid,
+                folderUid: message.folderUid,
+                mailboxUid: message.mailboxUid,
                 filename,
                 mimeType: (Array.isArray(mimeType) ? mimeType[0] : mimeType) ?? "application/octet-stream",
                 sizeBytes: raw.length,

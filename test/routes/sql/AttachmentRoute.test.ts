@@ -16,8 +16,9 @@ import * as uuid from "uuid";
 import { Repository } from "typeorm";
 import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
+import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
 import { AttachmentSQL } from "../../../src/models/sql/AttachmentSQL.js";
-import { FolderType } from "../../../src/models/types.js";
+import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
 import { registerTestDoubles, InMemoryBlobStore } from "../../testDoubles.js";
 
 describe("Route:AttachmentSQL Tests", () => {
@@ -27,6 +28,7 @@ describe("Route:AttachmentSQL Tests", () => {
     const baseUrl = "/sql/attachments";
     let mailboxRepo: Repository<MailboxSQL>;
     let folderRepo: Repository<FolderSQL>;
+    let messageRepo: Repository<MessageSQL>;
     let attachmentRepo: Repository<AttachmentSQL>;
     let aclRepo: Repository<AccessControlListSQL>;
 
@@ -78,6 +80,27 @@ describe("Route:AttachmentSQL Tests", () => {
         return result;
     };
 
+    const createMessage = async function (mailboxUid: string, folderUid: string, data?: any): Promise<MessageSQL> {
+        const obj: MessageSQL = new MessageSQL({
+            mailboxUid,
+            folderUid,
+            messageId: `${uuid.v4()}@example.com`,
+            subject: "Test Subject",
+            from: { address: "owner@example.com", type: RecipientType.TO },
+            recipients: [{ address: "recipient@example.com", type: RecipientType.TO }],
+            sentDate: new Date(),
+            receivedDate: new Date(),
+            bodyBlobKey: `bodies/${uuid.v4()}`,
+            bodyPreview: "Hello",
+            flags: { read: false, flagged: false, answered: false, forwarded: false },
+            importance: MessageImportance.NORMAL,
+            references: [],
+            hasAttachments: false,
+            ...data,
+        });
+        return await messageRepo.save(obj);
+    };
+
     const createAttachment = async function (mailboxUid: string, folderUid: string, data?: any): Promise<AttachmentSQL> {
         const blobStore: InMemoryBlobStore = objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
         const blobKey = `attachments/${uuid.v4()}`;
@@ -111,6 +134,7 @@ describe("Route:AttachmentSQL Tests", () => {
         if (isSqlDataSource(conn)) {
             mailboxRepo = conn.getRepository(MailboxSQL);
             folderRepo = conn.getRepository(FolderSQL);
+            messageRepo = conn.getRepository(MessageSQL);
             attachmentRepo = conn.getRepository(AttachmentSQL);
         } else {
             throw new Error("Could not find sql connection");
@@ -124,19 +148,18 @@ describe("Route:AttachmentSQL Tests", () => {
 
     beforeEach(async () => {
         await attachmentRepo.clear();
+        await messageRepo.clear();
         await folderRepo.clear();
         await mailboxRepo.clear();
     });
 
-    it("Owner can upload an attachment to a folder they have access to.", async () => {
+    it("Owner can upload an attachment to a message in a folder they have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
 
         const result = await request(server.getApplication())
-            .post(
-                `${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}&filename=test.txt&mimeType=text/plain`,
-            )
+            .post(`${baseUrl}/upload?messageUid=${message.uid}&filename=test.txt&mimeType=text/plain`)
             .set("Authorization", "jwt " + ownerToken)
             .set("Content-Type", "application/octet-stream")
             .send(Buffer.from("hello world"));
@@ -145,22 +168,52 @@ describe("Route:AttachmentSQL Tests", () => {
         expect(result.status).toBeLessThan(300);
         expect(result.body.filename).toBe("test.txt");
         expect(result.body.sizeBytes).toBe(11);
+        // folderUid/mailboxUid are always derived server-side from the message, never from client input.
+        expect(result.body.folderUid).toBe(folder.uid);
+        expect(result.body.mailboxUid).toBe(mailbox.uid);
 
         const blobStore: InMemoryBlobStore = objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
         const stored: Buffer = await blobStore.get(result.body.blobKey);
         expect(stored.toString()).toBe("hello world");
     });
 
-    it("A different user cannot upload an attachment to a folder they don't have access to.", async () => {
+    it("Rejects an upload whose messageUid doesn't correspond to any real message.", async () => {
+        const result = await request(server.getApplication())
+            .post(`${baseUrl}/upload?messageUid=${uuid.v4()}&filename=test.txt&mimeType=text/plain`)
+            .set("Authorization", "jwt " + ownerToken)
+            .set("Content-Type", "application/octet-stream")
+            .send(Buffer.from("hello world"));
+
+        expect(result.status).toBe(400);
+    });
+
+    it("A different user cannot upload an attachment to a message in a folder they don't have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid);
-        const messageUid = uuid.v4();
+        const message = await createMessage(mailbox.uid, folder.uid);
+
+        const result = await request(server.getApplication())
+            .post(`${baseUrl}/upload?messageUid=${message.uid}&filename=test.txt&mimeType=text/plain`)
+            .set("Authorization", "jwt " + otherUserToken)
+            .set("Content-Type", "application/octet-stream")
+            .send(Buffer.from("hello world"));
+
+        expect(result.status).toBe(403);
+    });
+
+    it("Cannot upload an attachment by supplying a spoofed folderUid/mailboxUid for a message in another mailbox (cross-mailbox attachment planting).", async () => {
+        const victimMailbox = await createMailbox(otherUser.uid);
+        const victimFolder = await createFolder(victimMailbox.uid);
+        const victimMessage = await createMessage(victimMailbox.uid, victimFolder.uid);
+        const attackerMailbox = await createMailbox(owner.uid);
+        const attackerFolder = await createFolder(attackerMailbox.uid);
 
         const result = await request(server.getApplication())
             .post(
-                `${baseUrl}/upload?messageUid=${messageUid}&folderUid=${folder.uid}&mailboxUid=${mailbox.uid}&filename=test.txt&mimeType=text/plain`,
+                `${baseUrl}/upload?messageUid=${victimMessage.uid}&folderUid=${attackerFolder.uid}` +
+                    `&mailboxUid=${attackerMailbox.uid}&filename=test.txt&mimeType=text/plain`,
             )
-            .set("Authorization", "jwt " + otherUserToken)
+            .set("Authorization", "jwt " + ownerToken)
             .set("Content-Type", "application/octet-stream")
             .send(Buffer.from("hello world"));
 
