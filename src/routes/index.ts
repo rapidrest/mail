@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 export * from "./BaseAttachmentRoute.js";
-export * from "./BaseCalendarFreeBusyRoute.js";
 export * from "./BaseCalendarShareLinkRoute.js";
 export * from "./BaseFolderRoute.js";
 export * from "./BaseMailboxRoute.js";

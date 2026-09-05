@@ -16,6 +16,20 @@ import { Folder } from "../models/types.js";
 const { Get, Head, Param, Post, Query, Request, Response, User: AuthUser } = RouteDecorators;
 
 /**
+ * See the identical helper (and its rationale for being duplicated rather than shared via a `util/` module)
+ * on `BaseScopedChildRoute.ts`.
+ */
+function resolveEffectiveUser(user: JWTUser | undefined, query: any): JWTUser | undefined {
+    if (user) {
+        return user;
+    }
+    const shareToken: unknown = query?.shareToken;
+    return typeof shareToken === "string" && shareToken.length > 0
+        ? ({ uid: shareToken, roles: [], scopes: [] })
+        : undefined;
+}
+
+/**
  * Extends the standard `CRUDRoute` CRUD scaffolding for `Folder` with a hybrid permission model — `Folder` is
  * one of the two entities in this library with a real per-record `AccessControlList` (the other is `Mailbox`;
  * see the architecture note on `Message.mailboxUid` in `models/types.ts`), so most of `CRUDRoute`'s default
@@ -45,12 +59,22 @@ const { Get, Head, Param, Post, Query, Request, Response, User: AuthUser } = Rou
  * notification (see `push/MailPushRoute.ts`) to the owning mailbox's channel, so a webmail client subscribed
  * to a mailbox sees new folders appear without polling.
  *
- * KNOWN LIMITATION: `update`/`delete` (folder rename/move/removal) do NOT publish a live-update notification,
- * unlike every mutation on the folder-scoped entities in `BaseScopedChildRoute`. Overriding them here purely to
- * add a notify call would mean re-implementing (and re-testing) the exact ACL-delegation behavior this class's
- * own doc comment above is careful to leave untouched by relying on `CRUDRoute`'s defaults — a real gap, but a
+ * `find`/`count`/`exists` also resolve an unauthenticated caller's `?shareToken=` query param via the local
+ * `resolveEffectiveUser()` helper below (see `BaseScopedChildRoute`'s doc comment for the full explanation of
+ * the mechanism this is one half of).
+ *
+ * KNOWN LIMITATIONS:
+ * - `update`/`delete` (folder rename/move/removal) do NOT publish a live-update notification, unlike every
+ * mutation on the folder-scoped entities in `BaseScopedChildRoute`. Overriding them here purely to add a
+ * notify call would mean re-implementing (and re-testing) the exact ACL-delegation behavior this class's own
+ * doc comment above is careful to leave untouched by relying on `CRUDRoute`'s defaults — a real gap, but a
  * deliberate one given how comparatively rare and low-urgency folder structural changes are next to new-mail
  * delivery, matching this library's existing "pragmatic subset, not full fidelity" scope elsewhere.
+ * - `findById` (also left on `CRUDRoute`'s default) does NOT resolve `?shareToken=` — a share link's token
+ * grants read access to the folder's *children* (e.g. its `CalendarEvent`s, via `BaseScopedChildRoute`), not
+ * to fetching the `Folder` record itself by id. A client wanting the calendar's display name alongside its
+ * events would need that carried elsewhere (e.g. denormalized onto `CalendarShareLink`), not fetched via this
+ * route with a token.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -69,11 +93,15 @@ export abstract class BaseFolderRoute<T extends Folder> extends CRUDRoute<T> {
         if (!mailboxUid) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
-        if (!(await this.aclUtils!.hasPermission(user, mailboxUid, ACLAction.COUNT))) {
+        if (!(await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), mailboxUid, ACLAction.COUNT))) {
             return res.status(200).setHeader("content-length", 0);
         }
+        // `shareToken` is consumed above by `resolveEffectiveUser()` for permission resolution only - it names
+        // no field on `T`, so it must not be forwarded into the data filter below (SQL: an unknown-column
+        // error; Mongo: a `$match` no real document ever satisfies, silently returning zero results either way).
+        const { shareToken: _shareToken, ...filterQuery } = query ?? {};
         const result: number = await this.repoUtils.count(
-            { ...query, ...params },
+            { ...filterQuery, ...params },
             { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
         );
         return res.status(200).setHeader("content-length", result);
@@ -116,11 +144,13 @@ export abstract class BaseFolderRoute<T extends Folder> extends CRUDRoute<T> {
         if (!mailboxUid) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
-        if (!(await this.aclUtils!.hasPermission(user, mailboxUid, ACLAction.LIST))) {
+        if (!(await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), mailboxUid, ACLAction.LIST))) {
             return [];
         }
+        // See the identical `shareToken` exclusion (and its rationale) in `count()` above.
+        const { shareToken: _shareToken, ...filterQuery } = query ?? {};
         return await this.repoUtils.find(
-            { ...query, ...params },
+            { ...filterQuery, ...params },
             { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
         );
     }
@@ -141,7 +171,7 @@ export abstract class BaseFolderRoute<T extends Folder> extends CRUDRoute<T> {
             ignoreACL: true,
         });
         const permitted: boolean = existing
-            ? await this.aclUtils!.hasPermission(user, existing.uid, ACLAction.EXISTS)
+            ? await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), existing.uid, ACLAction.EXISTS)
             : false;
         return permitted
             ? res.status(200).setHeader("content-length", 1)

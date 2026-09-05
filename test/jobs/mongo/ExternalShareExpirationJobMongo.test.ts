@@ -148,6 +148,40 @@ describe("ExternalShareExpirationJobMongo Tests (real DB + DI)", () => {
         expect(remaining.length).toBe(1);
     });
 
+    it("Revokes the expired link's ACLRecord from its folder's real ACL when purging it.", async () => {
+        const aclUtils: ACLUtils = objectFactory.getInstance(ACLUtils)!;
+        const folderUid = uuid.v4();
+        const expired = await createShareLink({ expiresAt: new Date(Date.now() - HOUR_MS), folderUid });
+        await aclUtils.saveACL({
+            uid: folderUid,
+            records: [
+                { userOrRoleId: expired.token, actions: ["freebusy"] },
+                { userOrRoleId: "someone-else", actions: ["read"] },
+            ],
+        });
+
+        await job.run();
+
+        const acl = await aclUtils.findACL(folderUid, [], { skipCache: true });
+        expect(acl?.records.find((r) => r.userOrRoleId === expired.token)).toBeUndefined();
+        expect(acl?.records.find((r) => r.userOrRoleId === "someone-else")).toBeDefined();
+    });
+
+    it("Does nothing to the folder's ACL when it exists but has no record for the expired link's token.", async () => {
+        const aclUtils: ACLUtils = objectFactory.getInstance(ACLUtils)!;
+        const folderUid = uuid.v4();
+        const expired = await createShareLink({ expiresAt: new Date(Date.now() - HOUR_MS), folderUid });
+        await aclUtils.saveACL({ uid: folderUid, records: [{ userOrRoleId: "someone-else", actions: ["read"] }] });
+
+        await expect(job.run()).resolves.toBeUndefined();
+
+        const acl = await aclUtils.findACL(folderUid, [], { skipCache: true });
+        expect(acl?.records.length).toBe(1);
+        expect(acl?.records[0].userOrRoleId).toBe("someone-else");
+        const found = await calendarShareLinkRepo.findOne({ uid: expired.uid } as any);
+        expect(found).toBeNull();
+    });
+
     it("Logs a warning and continues purging subsequent links when one delete throws.", async () => {
         // Real infrastructure has no deterministic, non-destructive way to make a single link's own delete throw
         // (a plain delete against a healthy DB simply succeeds, even for an already-removed row) - this targets

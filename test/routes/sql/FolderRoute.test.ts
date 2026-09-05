@@ -249,4 +249,49 @@ describe("Route:FolderSQL Tests", () => {
         const existing = await folderRepo.findOne({ where: { uid: folder.uid } });
         expect(existing).toBeNull();
     });
+
+    // See the identical describe block in test/routes/mongo/FolderRoute.test.ts for the full rationale - this
+    // verifies the same `?shareToken=` resolution on the SQL-backed variant.
+    describe("Anonymous access via a share token", () => {
+        it("An anonymous caller with a token granted `exists` on the folder's own ACL can confirm it exists.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const token = uuid.v4();
+            const acl = await aclRepo.findOne({ where: { uid: folder.uid } });
+            acl!.records = [{ userOrRoleId: token, actions: [ACLAction.EXISTS] }];
+            await aclRepo.save(acl!);
+
+            const result = await request(server.getApplication()).head(`${baseUrl}/${folder.uid}?shareToken=${token}`);
+
+            expect(result.status).toBe(200);
+            expect(result.headers["content-length"]).toBe("1");
+        });
+
+        it("An anonymous caller with an unknown share token cannot confirm the folder exists (404).", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+
+            const result = await request(server.getApplication()).head(
+                `${baseUrl}/${folder.uid}?shareToken=not-a-real-token`,
+            );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("A folder-scoped share token does not grant list/count access to the owning mailbox's folders.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const token = uuid.v4();
+            const acl = await aclRepo.findOne({ where: { uid: folder.uid } });
+            acl!.records = [{ userOrRoleId: token, actions: [ACLAction.FULL] }];
+            await aclRepo.save(acl!);
+
+            const result = await request(server.getApplication()).get(
+                `${baseUrl}?mailboxUid=${mailbox.uid}&shareToken=${token}`,
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.body).toEqual([]);
+        });
+    });
 });

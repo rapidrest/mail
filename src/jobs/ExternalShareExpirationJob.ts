@@ -3,20 +3,16 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
-import { BackgroundService, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
+import { BackgroundService, ObjectFactory, ACLUtils, RepoUtils, type AccessControlList } from "@rapidrest/service-core";
 import { CalendarShareLink } from "../models/types.js";
-const { Config, Init, Logger } = ObjectDecorators;
+const { Config, Init, Inject, Logger } = ObjectDecorators;
 
 /**
  * Garbage-collects expired `CalendarShareLink` rows (anonymous external calendar-sharing links whose
- * `expiresAt` has passed).
- *
- * TODO: Per the architecture plan, an expired share link's corresponding `ACLRecord` (granted on the shared
- * folder's `AccessControlList`, keyed by `CalendarShareLink.token` as the `userOrRoleId`) should also be
- * removed via `ACLUtils`. That's deliberately out of scope here - there isn't yet a clear, established mapping
- * from `CalendarShareLink.token` back to the exact `ACLRecord` to remove, and guessing at `ACLUtils`'s call
- * shape for that would risk removing the wrong grant. This job is scoped to deleting the expired
- * `CalendarShareLink` row itself; ACL cleanup is a follow-up once that mapping is established.
+ * `expiresAt` has passed), also revoking the `ACLRecord` each link's `token` was granted on its shared
+ * folder's `AccessControlList` (see `BaseCalendarShareLinkRoute`, which grants/upserts that same record on
+ * create/update — this job is the other half of keeping it in sync, for links that expire rather than being
+ * explicitly deleted via the API).
  *
  * Concrete entity classes are supplied by the Mongo/SQL subclasses (`ExternalShareExpirationJobMongo`/
  * `ExternalShareExpirationJobSQL`), following the same generic pattern `ScanQueueJob` uses.
@@ -30,6 +26,9 @@ export abstract class ExternalShareExpirationJob<S extends CalendarShareLink> ex
     private _objectFactory?: ObjectFactory;
 
     private calendarShareLinkRepo?: RepoUtils<S>;
+
+    @Inject(ACLUtils)
+    private aclUtils?: ACLUtils;
 
     @Config("mail:jobs:external_share_expiration:schedule", "0 0 5 * * *")
     private scheduleExpr: string = "0 0 5 * * *";
@@ -86,9 +85,28 @@ export abstract class ExternalShareExpirationJob<S extends CalendarShareLink> ex
         for (const link of links) {
             try {
                 await this.calendarShareLinkRepo.delete(link.uid, { ignoreACL: true, purge: true });
+                await this.revokeShareTokenAccess(link.folderUid, link.token);
             } catch (err: any) {
                 this.logger?.warn(`ExternalShareExpirationJob: failed to delete expired share link ${link.uid}: ${err.message}`);
             }
         }
+    }
+
+    /** Removes any ACL record for `token` from `folderUid`'s ACL - see `BaseCalendarShareLinkRoute`'s identical
+     * helper for the full rationale (kept as a separate copy here rather than a shared import, since this job
+     * has no other dependency on the routes layer and the logic is a few lines). A no-op if the folder has no
+     * ACL document or no matching record - failing open here keeps a missing/corrupt folder ACL from turning a
+     * routine expiration sweep into a failed job run for every OTHER link in the same batch. */
+    private async revokeShareTokenAccess(folderUid: string, token: string): Promise<void> {
+        const acl: AccessControlList | undefined = await this.aclUtils?.findACL(folderUid);
+        if (!acl) {
+            return;
+        }
+        const records = acl.records.filter((record) => record.userOrRoleId !== token);
+        if (records.length === acl.records.length) {
+            return;
+        }
+        acl.records = records;
+        await this.aclUtils!.saveACL(acl);
     }
 }

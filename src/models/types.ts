@@ -428,18 +428,23 @@ export interface CalendarEvent extends BaseEntity {
 
 /**
  * Supports anonymous, unauthenticated external access to a `CalendarEvent` folder's free/busy information (or
- * broader access, per `permittedActions`) via a shareable link. `token` acts as a resolvable `userOrRoleId`
- * against the folder's `AccessControlList`.
+ * broader access, per `permittedActions`) via a shareable link. A calendar's sharing is otherwise just ordinary
+ * `AccessControlList` management on its `Folder` (see `BaseFolderRoute`/`BaseScopedChildRoute`'s doc comments)
+ * — this entity exists solely to add what a bare ACL record can't: a uniquely generated, revocable/expiring
+ * credential a link recipient doesn't have to authenticate to use. `token` is granted directly as a real
+ * `ACLRecord` (`{userOrRoleId: token, actions: permittedActions}`) on the shared folder's own
+ * `AccessControlList` by `BaseCalendarShareLinkRoute` (revoked the same way on delete/expiry) — an anonymous
+ * request presenting it via `?shareToken=` is resolved into a synthetic identity checked by the exact same
+ * `ACLUtils.hasPermission()` call every other caller goes through (see `BaseScopedChildRoute`'s
+ * `resolveEffectiveUser()`). There is no separate lookup route or bespoke permission model for it.
  *
  * @author Jean-Philippe Steinmetz
  */
 export interface CalendarShareLink extends BaseEntity {
     /**
-     * The unique, unguessable token embedded in the shared URL. Anonymous consumption of a share link (e.g. a
-     * public free/busy lookup) is handled by a dedicated endpoint that looks up this token directly and checks
-     * `expiresAt`/`permittedActions` itself — it deliberately does not go through `AccessControlList`/
-     * `ACLUtils` at all, since a token is a narrow, bearer-style grant rather than an identity `ACLUtils` could
-     * resolve a record for.
+     * The unique, unguessable token embedded in the shared URL, minted server-side (see
+     * `BaseCalendarShareLinkRoute.create()`) and immutable thereafter. Doubles as the `userOrRoleId` of the
+     * `ACLRecord` this link grants on its `folderUid`'s `AccessControlList`.
      */
     token: string;
 

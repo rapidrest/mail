@@ -17,6 +17,29 @@ import {
 const { Delete, Get, Head, Param, Post, Put, Query, Request, Response, User: AuthUser } = RouteDecorators;
 
 /**
+ * Resolves an unauthenticated caller's `?shareToken=` query parameter into a synthetic, ACL-checkable identity
+ * (`uid` = the token itself) when no real authenticated `user` is present — see `BaseScopedChildRoute`'s own
+ * doc comment for the full explanation of the mechanism this is one half of. Kept as a small private function
+ * duplicated in `BaseScopedChildRoute.ts`/`BaseFolderRoute.ts` (identical in both), rather than a shared
+ * `util/` module, deliberately: `ClassLoader` (see `@rapidrest/core`) scans and dynamically `import()`s an
+ * entire test-fixture directory's files concurrently via `Promise.all`, and a brand-new leaf module reached
+ * for the very first time by *several* of those concurrent imports at once triggered a real, repeatable
+ * `"Class extends value undefined"` failure under Vitest's module transform — the same class of "concurrent
+ * first dynamic import of the same module can resolve inconsistently" issue already documented on
+ * `ConnectionManager.connect()`'s sequential-redis-connection comment. Duplicating these few lines avoids ever
+ * introducing that new shared module into the concurrently-scanned graph.
+ */
+function resolveEffectiveUser(user: JWTUser | undefined, query: any): JWTUser | undefined {
+    if (user) {
+        return user;
+    }
+    const shareToken: unknown = query?.shareToken;
+    return typeof shareToken === "string" && shareToken.length > 0
+        ? ({ uid: shareToken, roles: [], scopes: [] })
+        : undefined;
+}
+
+/**
  * Base CRUD route for any entity that has no `AccessControlList` of its own and is instead permission-checked
  * against a named "scope" field it carries — `folderUid` for most entities (`Message`, `CalendarEvent`,
  * `Task`, `Note`, `Contact`, `Attachment`, `CalendarShareLink`), or `mailboxUid` for the one entity with no
@@ -40,6 +63,14 @@ const { Delete, Get, Head, Param, Post, Put, Query, Request, Response, User: Aut
  * rather than `403`, so a caller with no access can't distinguish "records exist but you can't see them" from
  * "nothing matches". Write-shaped denials (`create`/`update`/`delete`/`truncate`/`updateProperty`) return
  * `403`, since the caller already knows the target scope/record they were trying to act on.
+ *
+ * Read-shaped methods also resolve an unauthenticated caller's `?shareToken=` query param via the local
+ * `resolveEffectiveUser()` helper below before checking permission — this, together with
+ * `BaseCalendarShareLinkRoute` keeping a real `ACLRecord` for each link's token in sync on the shared folder's
+ * `AccessControlList`, is the entire mechanism behind anonymous `CalendarShareLink` consumption. There is no
+ * separate route or lookup for it: a share link's token is checked by `ACLUtils.hasPermission()` exactly the
+ * same way any other uid is, through these same `find`/`count`/`exists`/`findById` methods every other caller
+ * already uses.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -88,11 +119,15 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
         if (!scopeUid) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
-        if (!(await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.COUNT))) {
+        if (!(await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), scopeUid, ACLAction.COUNT))) {
             return res.status(200).setHeader("content-length", 0);
         }
+        // `shareToken` is consumed above by `resolveEffectiveUser()` for permission resolution only - it names
+        // no field on `T`, so it must not be forwarded into the data filter below (SQL: an unknown-column
+        // error; Mongo: a `$match` no real document ever satisfies, silently returning zero results either way).
+        const { shareToken: _shareToken, ...filterQuery } = query ?? {};
         const result: number = await this.repoUtils.count(
-            { ...query, ...params },
+            { ...filterQuery, ...params },
             { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
         );
         return res.status(200).setHeader("content-length", result);
@@ -152,7 +187,9 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
             ignoreACL: true,
         });
         const scopeUid: string | undefined = existing ? this.scopeUidOf(existing) : undefined;
-        const permitted: boolean = scopeUid ? await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.EXISTS) : false;
+        const permitted: boolean = scopeUid
+            ? await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), scopeUid, ACLAction.EXISTS)
+            : false;
         return permitted
             ? res.status(200).setHeader("content-length", 1)
             : res.status(404).setHeader("content-length", 0);
@@ -167,11 +204,13 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
         if (!scopeUid) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
-        if (!(await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.LIST))) {
+        if (!(await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), scopeUid, ACLAction.LIST))) {
             return [];
         }
+        // See the identical `shareToken` exclusion (and its rationale) in `count()` above.
+        const { shareToken: _shareToken, ...filterQuery } = query ?? {};
         return await this.repoUtils.find(
-            { ...query, ...params },
+            { ...filterQuery, ...params },
             { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
         );
     }
@@ -187,7 +226,7 @@ export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRou
             ignoreACL: true,
         });
         const scopeUid: string | undefined = existing ? this.scopeUidOf(existing) : undefined;
-        if (!scopeUid || !(await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.READ))) {
+        if (!scopeUid || !(await this.aclUtils!.hasPermission(resolveEffectiveUser(user, query), scopeUid, ACLAction.READ))) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
         return existing!;

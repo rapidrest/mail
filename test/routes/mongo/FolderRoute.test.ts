@@ -374,4 +374,53 @@ describe("Route:FolderMongo Tests", () => {
         const existing = await folderRepo.findOne({ uid: folder.uid } as any);
         expect(existing).toBeNull();
     });
+
+    // `exists()` checks permission against the folder's OWN resolved ACL (unlike `find`/`count`, which check
+    // the owning mailbox's) - so it's the one operation here a `CalendarShareLink`-style token grant (an
+    // `ACLRecord` added directly to the folder's own ACL, same shape `BaseCalendarShareLinkRoute` produces)
+    // actually satisfies. Granting the record directly here (rather than via the full share-link route) keeps
+    // this focused on `BaseFolderRoute`'s own `?shareToken=` resolution, already covered end-to-end together
+    // with `BaseCalendarShareLinkRoute` in `CalendarEventRoute.test.ts`'s "Anonymous access" tests.
+    describe("Anonymous access via a share token", () => {
+        it("An anonymous caller with a token granted `exists` on the folder's own ACL can confirm it exists.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const token = uuid.v4();
+            const acl = await aclRepo.findOne({ uid: folder.uid } as any);
+            acl.records = [{ userOrRoleId: token, actions: [ACLAction.EXISTS] }];
+            await aclRepo.save(acl);
+
+            const result = await request(server.getApplication()).head(`${baseUrl}/${folder.uid}?shareToken=${token}`);
+
+            expect(result.status).toBe(200);
+            expect(result.headers["content-length"]).toBe("1");
+        });
+
+        it("An anonymous caller with an unknown share token cannot confirm the folder exists (404).", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+
+            const result = await request(server.getApplication()).head(
+                `${baseUrl}/${folder.uid}?shareToken=not-a-real-token`,
+            );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("A folder-scoped share token does not grant list/count access to the owning mailbox's folders.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const token = uuid.v4();
+            const acl = await aclRepo.findOne({ uid: folder.uid } as any);
+            acl.records = [{ userOrRoleId: token, actions: [ACLAction.FULL] }];
+            await aclRepo.save(acl);
+
+            const result = await request(server.getApplication()).get(
+                `${baseUrl}?mailboxUid=${mailbox.uid}&shareToken=${token}`,
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.body).toEqual([]);
+        });
+    });
 });

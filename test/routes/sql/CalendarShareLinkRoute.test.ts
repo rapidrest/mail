@@ -6,6 +6,7 @@ import config from "../../config.sql.js";
 import { request } from "@rapidrest/service-core/test";
 import {
     ACLRecord,
+    ACLUtils,
     Server,
     ObjectFactory,
     ConnectionManager,
@@ -36,6 +37,8 @@ describe("Route:CalendarShareLinkSQL Tests", () => {
     const ownerToken = JWTUtils.createTokenSync(config.get("auth"), owner);
     const otherUser: any = { uid: uuid.v4(), roles: [], elevated: Date.now() };
     const otherUserToken = JWTUtils.createTokenSync(config.get("auth"), otherUser);
+    const admin: any = { uid: uuid.v4(), roles: ["admin"], elevated: Date.now() };
+    const adminToken = JWTUtils.createTokenSync(config.get("auth"), admin);
 
     const createMailbox = async function (ownerUid: string): Promise<MailboxSQL> {
         const obj: MailboxSQL = new MailboxSQL({
@@ -312,5 +315,121 @@ describe("Route:CalendarShareLinkSQL Tests", () => {
 
         expect(result.status).toBe(200);
         expect(result.headers["content-length"]).toBe("0");
+    });
+
+    // See the identical describe block in test/routes/mongo/CalendarShareLinkRoute.test.ts for the full
+    // rationale behind each of these - this verifies the same ACL-sync bookkeeping on the SQL-backed variant.
+    describe("ACL synchronization", () => {
+        it("Creating a share link grants an ACLRecord for its token on the shared folder.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+
+            const result = await request(server.getApplication())
+                .post(baseUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read", "freebusy"], createdByUserUid: owner.uid });
+            expect(result.status).toBeLessThan(300);
+
+            const acl = await aclRepo.findOne({ where: { uid: folder.uid } });
+            const record = acl!.records.find((r: ACLRecord) => r.userOrRoleId === result.body.token);
+            expect(record).toBeDefined();
+            expect(record!.actions).toEqual(["read", "freebusy"]);
+        });
+
+        it("Deleting a share link revokes the ACLRecord for its token from the shared folder.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const created = await request(server.getApplication())
+                .post(baseUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+
+            await request(server.getApplication())
+                .delete(`${baseUrl}/${created.body.uid}`)
+                .set("Authorization", "jwt " + ownerToken);
+
+            const acl = await aclRepo.findOne({ where: { uid: folder.uid } });
+            expect(acl!.records.find((r: ACLRecord) => r.userOrRoleId === created.body.token)).toBeUndefined();
+        });
+
+        it("Updating a share link's folderUid revokes the ACLRecord from the old folder and grants it on the new one.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder1 = await createFolder(mailbox.uid);
+            const folder2 = await createFolder(mailbox.uid);
+            const created = await request(server.getApplication())
+                .post(baseUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder1.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+
+            const updated = await request(server.getApplication())
+                .put(`${baseUrl}/${created.body.uid}`)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ uid: created.body.uid, version: created.body.version, folderUid: folder2.uid });
+            expect(updated.status).toBe(200);
+
+            const acl1 = await aclRepo.findOne({ where: { uid: folder1.uid } });
+            const acl2 = await aclRepo.findOne({ where: { uid: folder2.uid } });
+            expect(acl1!.records.find((r: ACLRecord) => r.userOrRoleId === created.body.token)).toBeUndefined();
+            expect(acl2!.records.find((r: ACLRecord) => r.userOrRoleId === created.body.token)).toBeDefined();
+        });
+
+        it("Updating a share link's permittedActions re-grants (upserts) the ACLRecord to match.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const created = await request(server.getApplication())
+                .post(baseUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+
+            await request(server.getApplication())
+                .put(`${baseUrl}/${created.body.uid}`)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ uid: created.body.uid, version: created.body.version, permittedActions: ["read", "freebusy"] });
+
+            const acl = await aclRepo.findOne({ where: { uid: folder.uid } });
+            const record = acl!.records.find((r: ACLRecord) => r.userOrRoleId === created.body.token);
+            expect(record!.actions).toEqual(["read", "freebusy"]);
+        });
+
+        it("Creating a share link still succeeds (fails open) even if the target folder's ACL document is missing.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            // Simulates a corrupt/missing folder ACL document - a trusted (`admin`) role is required to still
+            // pass the underlying `requirePermission()` check without a real ACL record to match against.
+            await aclRepo.delete({ uid: folder.uid });
+
+            const result = await request(server.getApplication())
+                .post(baseUrl)
+                .set("Authorization", "jwt " + adminToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: admin.uid });
+
+            expect(result.status).toBeLessThan(300);
+            const acl = await aclRepo.findOne({ where: { uid: folder.uid } });
+            expect(acl).toBeNull();
+        });
+
+        it("Deleting a share link still succeeds (fails open) even if the target folder's ACL document is already missing.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const created = await request(server.getApplication())
+                .post(baseUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+            // Simulates the folder's ACL document disappearing (e.g. the folder was purged) between the share
+            // link's creation and its deletion - a trusted (`admin`) role is required to still pass the
+            // underlying `requirePermission()` check without a real ACL record to match against. Goes through
+            // `ACLUtils.removeACL()` (rather than deleting the row directly) so its cache entry - populated by
+            // the `findACL()` call the creation above already made - is invalidated too; a raw row delete would
+            // leave that stale cached copy readable by the very `findACL()` call this test means to make miss.
+            const aclUtils: ACLUtils = objectFactory.getInstance(ACLUtils)!;
+            await aclUtils.removeACL(folder.uid);
+
+            const result = await request(server.getApplication())
+                .delete(`${baseUrl}/${created.body.uid}`)
+                .set("Authorization", "jwt " + adminToken);
+
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+        });
     });
 });

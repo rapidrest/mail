@@ -343,4 +343,97 @@ describe("Route:CalendarEventSQL Tests", () => {
         expect(result.status).toBe(200);
         expect(result.headers["content-length"]).toBe("0");
     });
+
+    // See the identical describe block in test/routes/mongo/CalendarEventRoute.test.ts for the full rationale:
+    // this exercises the ACL-native anonymous calendar-sharing mechanism (no separate route/token-lookup) on
+    // the SQL-backed variant.
+    describe("Anonymous access via a CalendarShareLink token", () => {
+        const shareLinksUrl = "/sql/calendar-share-links";
+
+        it("An anonymous caller with a valid share token can list calendar events in the shared folder.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            await createCalendarEvent(mailbox.uid, folder.uid);
+
+            // `list` is a distinct `ACLAction` from `read` - a link's `permittedActions` must include it
+            // explicitly to permit enumeration, same as any other ACL record would.
+            const link = await request(server.getApplication())
+                .post(shareLinksUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["list", "read"], createdByUserUid: owner.uid });
+            expect(link.status).toBeLessThan(300);
+
+            const result = await request(server.getApplication()).get(
+                `${baseUrl}?folderUid=${folder.uid}&shareToken=${link.body.token}`,
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.body.length).toBe(1);
+            expect(result.body[0].title).toBe("Team Sync");
+        });
+
+        it("An anonymous caller with a valid share token can read a specific calendar event by id.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            const event = await createCalendarEvent(mailbox.uid, folder.uid);
+
+            const link = await request(server.getApplication())
+                .post(shareLinksUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+
+            const result = await request(server.getApplication()).get(
+                `${baseUrl}/${event.uid}?shareToken=${link.body.token}`,
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.body.uid).toBe(event.uid);
+        });
+
+        it("An anonymous caller with no share token gets an empty list, not an error.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            await createCalendarEvent(mailbox.uid, folder.uid);
+
+            const result = await request(server.getApplication()).get(`${baseUrl}?folderUid=${folder.uid}`);
+
+            expect(result.status).toBe(200);
+            expect(result.body).toEqual([]);
+        });
+
+        it("An anonymous caller with an unknown/bogus share token gets an empty list, not access.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            await createCalendarEvent(mailbox.uid, folder.uid);
+
+            const result = await request(server.getApplication()).get(
+                `${baseUrl}?folderUid=${folder.uid}&shareToken=not-a-real-token`,
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.body).toEqual([]);
+        });
+
+        it("Revoking (deleting) a share link immediately cuts off the anonymous access it granted.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            const folder = await createFolder(mailbox.uid);
+            await createCalendarEvent(mailbox.uid, folder.uid);
+
+            const link = await request(server.getApplication())
+                .post(shareLinksUrl)
+                .set("Authorization", "jwt " + ownerToken)
+                .send({ folderUid: folder.uid, permittedActions: ["read"], createdByUserUid: owner.uid });
+
+            await request(server.getApplication())
+                .delete(`${shareLinksUrl}/${link.body.uid}`)
+                .set("Authorization", "jwt " + ownerToken);
+
+            const result = await request(server.getApplication()).get(
+                `${baseUrl}?folderUid=${folder.uid}&shareToken=${link.body.token}`,
+            );
+
+            expect(result.status).toBe(200);
+            expect(result.body).toEqual([]);
+        });
+    });
 });
