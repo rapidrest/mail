@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ACLAction, BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
+import { BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
 import { Mailbox } from "../types.js";
 const { Description } = DocDecorators;
 const { DataStore, Protect } = ModelDecorators;
@@ -27,10 +27,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "Mailbox",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            // Deny-all, including CREATE: mailbox creation is handled entirely by `BaseMailboxRoute.create()`,
+            // which bypasses this class-level ACL (see its doc comment for why a `.*` CREATE grant here would
+            // leak into permission checks against *specific* mailboxes' ACLs, since they parent to this one).
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
     true,

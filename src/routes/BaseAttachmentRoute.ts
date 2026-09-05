@@ -4,31 +4,27 @@
 ///////////////////////////////////////////////////////////////////////////////
 import * as crypto from "crypto";
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
-import {
-    ApiErrorMessages,
-    ApiErrors,
-    CRUDRoute,
-    DocDecorators,
-    HttpRequest,
-    HttpResponse,
-    RouteDecorators,
-} from "@rapidrest/service-core";
+import { ACLAction, ApiErrorMessages, ApiErrors, DocDecorators, HttpRequest, HttpResponse, RouteDecorators } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
+import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
 import { Attachment } from "../models/types.js";
 const { Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Get, Param, Post, Request, Response, User: AuthUser } = RouteDecorators;
 
 /**
- * Extends the standard `CRUDRoute` CRUD scaffolding for `Attachment` with `upload`/`download` endpoints that
- * move binary content through the configured `BlobStore` — `Attachment` records never carry binary content
- * inline, only metadata plus a `blobKey`. Ordinary `create` is deliberately NOT used for uploading an
- * attachment's content (it would require the client to already have a `blobKey`, which only this route can
- * mint) — `upload` replaces it as the way a new attachment record is created.
+ * Extends `BaseScopedChildRoute` (scoped by `folderUid` — see the architecture note on `Message.mailboxUid`)
+ * for `Attachment` with `upload`/`download` endpoints that move binary content through the configured
+ * `BlobStore` — `Attachment` records never carry binary content inline, only metadata plus a `blobKey`.
+ * Ordinary `create` is deliberately NOT used for uploading an attachment's content (it would require the
+ * client to already have a `blobKey`, which only this route can mint) — `upload` replaces it as the way a new
+ * attachment record is created.
  *
  * @author Jean-Philippe Steinmetz
  */
-export abstract class BaseAttachmentRoute<T extends Attachment> extends CRUDRoute<T> {
+export abstract class BaseAttachmentRoute<T extends Attachment> extends BaseScopedChildRoute<T> {
+    protected readonly scopeProperty: string = "folderUid";
+
     @Inject("BlobStore")
     private blobStore?: BlobStore;
 
@@ -42,14 +38,30 @@ export abstract class BaseAttachmentRoute<T extends Attachment> extends CRUDRout
         }
 
         const messageUid: string | string[] | undefined = req.query["messageUid"];
+        const folderUid: string | string[] | undefined = req.query["folderUid"];
+        const mailboxUid: string | string[] | undefined = req.query["mailboxUid"];
         const filename: string | string[] | undefined = req.query["filename"];
         const mimeType: string | string[] | undefined = req.query["mimeType"];
         const isInline: boolean = req.query["isInline"] === "true";
         const contentId: string | string[] | undefined = req.query["contentId"];
         const raw: Buffer | undefined = req.rawBody;
 
-        if (!raw || raw.length === 0 || Array.isArray(messageUid) || !messageUid || Array.isArray(filename) || !filename) {
+        if (
+            !raw ||
+            raw.length === 0 ||
+            Array.isArray(messageUid) ||
+            !messageUid ||
+            Array.isArray(folderUid) ||
+            !folderUid ||
+            Array.isArray(mailboxUid) ||
+            !mailboxUid ||
+            Array.isArray(filename) ||
+            !filename
+        ) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
+        }
+        if (!(await this.aclUtils!.hasPermission(user, folderUid, ACLAction.CREATE))) {
+            throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
         }
 
         const blobKey: string = `attachments/${crypto.randomUUID()}`;
@@ -57,9 +69,11 @@ export abstract class BaseAttachmentRoute<T extends Attachment> extends CRUDRout
             contentType: Array.isArray(mimeType) ? mimeType[0] : mimeType,
         });
 
-        return await super.doCreateObject(
+        return await this.doCreateObject(
             {
                 messageUid,
+                folderUid,
+                mailboxUid,
                 filename,
                 mimeType: (Array.isArray(mimeType) ? mimeType[0] : mimeType) ?? "application/octet-stream",
                 sizeBytes: raw.length,
@@ -67,7 +81,7 @@ export abstract class BaseAttachmentRoute<T extends Attachment> extends CRUDRout
                 contentId: Array.isArray(contentId) ? contentId[0] : contentId,
                 isInline,
             } as any,
-            { user },
+            { user, ignoreACL: true },
         );
     }
 
@@ -83,8 +97,8 @@ export abstract class BaseAttachmentRoute<T extends Attachment> extends CRUDRout
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
 
-        const attachment: T | undefined = await this.repoUtils.findOne(id, { user });
-        if (!attachment) {
+        const attachment: T | undefined = await this.repoUtils.findOne(id, { ignoreACL: true });
+        if (!attachment || !(await this.aclUtils!.hasPermission(user, attachment.folderUid, ACLAction.READ))) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
 

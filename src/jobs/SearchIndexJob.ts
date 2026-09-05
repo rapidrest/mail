@@ -87,9 +87,14 @@ export abstract class SearchIndexJob<M extends Message, A extends Attachment> ex
         );
 
         const docs: SearchDocument[] = [];
+        // Only messages that actually produced a document get stamped `searchIndexedAt` below - a message
+        // whose `buildDocument()` throws (e.g. a transient blob-store failure) must be picked up again by a
+        // later run, not silently marked "already indexed" and skipped forever.
+        const indexed: M[] = [];
         for (const message of pending) {
             try {
                 docs.push(await this.buildDocument(message));
+                indexed.push(message);
             } catch (err: any) {
                 this.logger?.warn(`SearchIndexJob: failed to build search document for message ${message.uid}: ${err.message}`);
             }
@@ -102,7 +107,7 @@ export abstract class SearchIndexJob<M extends Message, A extends Attachment> ex
         await this.searchProvider.bulkIndex(docs);
 
         const now: Date = new Date();
-        for (const message of pending) {
+        for (const message of indexed) {
             await this.messageRepo.update(
                 { uid: message.uid, version: (message as any).version, searchIndexedAt: now } as any,
                 message,

@@ -36,13 +36,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "Message",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class MessageMongo extends BaseMongoEntity implements Message {
     @Column()

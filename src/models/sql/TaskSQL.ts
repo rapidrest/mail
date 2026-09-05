@@ -25,13 +25,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "Task",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class TaskSQL extends BaseEntity implements Task {
     @Column()
@@ -60,7 +57,11 @@ export class TaskSQL extends BaseEntity implements Task {
     @Description("`true` if the task has been completed.")
     public completed: boolean = false;
 
-    @Column()
+    // `type: "varchar"` is required on every enum-typed column: TypeScript's `emitDecoratorMetadata` reflects
+    // a string enum's design type as the enum object itself, not a primitive constructor, which TypeORM/
+    // better-sqlite3 cannot resolve into a column type on its own (it would otherwise fail at
+    // `DataSource.initialize()` with "Data type 'undefined' ... is not supported").
+    @Column({ type: "varchar" })
     @Description("The priority of the task.")
     public priority: TaskPriority = TaskPriority.NORMAL;
 

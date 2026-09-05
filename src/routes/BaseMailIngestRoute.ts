@@ -57,6 +57,17 @@ export abstract class BaseMailIngestRoute<M extends Mailbox, Q extends IngestQue
     @Logger
     private logger: any;
 
+    /**
+     * Builds the query value used to match `Mailbox.aliasAddresses` against the given address. MongoDB's
+     * implicit array-element equality lets a plain value match "array contains" directly, so the default here
+     * is a no-op passthrough. `MailIngestRouteSQL` overrides this: the SQL backend stores `aliasAddresses` as a
+     * serialized `simple-json` column, where a plain equality filter compares against the whole serialized
+     * string and never matches a single element.
+     */
+    protected aliasQueryValue(address: string): any {
+        return address;
+    }
+
     private async init() {
         if (!this.mailboxRepo) {
             this.mailboxRepo = await this._objectFactory!.newInstance(RepoUtils, {
@@ -115,7 +126,7 @@ export abstract class BaseMailIngestRoute<M extends Mailbox, Q extends IngestQue
 
         const [byPrimary, byAlias] = await Promise.all([
             this.mailboxRepo!.find({ primarySmtpAddress: address }, { ignoreACL: true, limit: 1 }),
-            this.mailboxRepo!.find({ aliasAddresses: address }, { ignoreACL: true, limit: 1 }),
+            this.mailboxRepo!.find({ aliasAddresses: this.aliasQueryValue(address) }, { ignoreACL: true, limit: 1 }),
         ]);
 
         return byPrimary.length > 0 || byAlias.length > 0 ? res.status(200) : res.status(404);
@@ -156,7 +167,12 @@ export abstract class BaseMailIngestRoute<M extends Mailbox, Q extends IngestQue
             );
             const mailbox: M | undefined =
                 mailboxes[0] ??
-                (await this.mailboxRepo!.find({ aliasAddresses: address }, { ignoreACL: true, limit: 1 }))[0];
+                (
+                    await this.mailboxRepo!.find(
+                        { aliasAddresses: this.aliasQueryValue(address) },
+                        { ignoreACL: true, limit: 1 },
+                    )
+                )[0];
 
             if (!mailbox) {
                 this.logger?.warn(`MailIngestRoute: dropping delivery for unresolvable recipient '${address}'.`);

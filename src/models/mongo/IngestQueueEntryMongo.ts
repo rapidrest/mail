@@ -35,13 +35,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "IngestQueueEntry",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class IngestQueueEntryMongo extends BaseMongoEntity implements IngestQueueEntry {
     @Column()

@@ -122,7 +122,34 @@ export interface Message extends BaseEntity {
     /** The unique identifier of the `Folder` this message currently resides in. */
     folderUid: string;
 
-    /** The unique identifier of the `Mailbox` this message belongs to. */
+    /**
+     * The unique identifier of the `Mailbox` this message belongs to.
+     *
+     * ARCHITECTURE NOTE (the sharing model for this whole library): only two entities get a real per-record
+     * `AccessControlList` (`@Protect(..., true)`) — `Mailbox` (the root) and `Folder` (whose ACL's `parentUid`
+     * points at its owning mailbox's ACL, so a mailbox-wide grant flows down to every folder in it by default,
+     * while a single folder — e.g. one Calendar — can still be shared independently on its own ACL, which is
+     * what makes it possible to share just a calendar with someone without sharing the whole mailbox).
+     *
+     * Every other entity in this library is a "folder child" with no ACL of its own: `Message`,
+     * `CalendarEvent`, `Task`, `Note`, `Contact`, `Attachment`, and `CalendarShareLink` all carry a denormalized
+     * `folderUid` and are `@Protect(..., false)` — permissions on an individual message/event/etc. are never
+     * granted or revoked independently of the folder it lives in, so giving each of them their own ACL document
+     * would be both unnecessary (nothing ever differs per-record) and expensive at scale (one ACL document per
+     * message vs. one per folder). `ContactList` has no folder to belong to and instead carries a denormalized
+     * `mailboxUid`, checked directly against the mailbox's ACL. Every route for these folder/mailbox-scoped
+     * entities checks `ACLUtils.hasPermission(user, record.folderUid | record.mailboxUid, action)` against the
+     * owning folder's or mailbox's ACL (which `hasPermission` resolves by uid, following its own `parentUid`
+     * chain), then performs the actual `RepoUtils` operation with `ignoreACL: true` since permission was
+     * already established. See `BaseScopedChildRoute` for the shared implementation, and `BaseFolderRoute` for
+     * `Folder`'s own hybrid pattern (real ACL, but `find`/`count`/`create` still need explicit mailbox-scoped
+     * permission checks the same way, since a folder doesn't exist yet at create time and class-level `LIST` is
+     * denied for privacy the same reason it is everywhere else in this library).
+     *
+     * `mailboxUid` itself remains on `Message` (redundant with its `Folder`'s own `mailboxUid`) purely as a
+     * denormalized convenience for queries that scan a whole mailbox without caring about folder boundaries
+     * (e.g. `MailboxQuotaRecalcJob`) — it plays no role in permission checks.
+     */
     mailboxUid: string;
 
     /** The RFC 5322 `Message-ID` header value, used to deduplicate and thread messages. */
@@ -172,6 +199,18 @@ export interface Message extends BaseEntity {
 export interface Attachment extends BaseEntity {
     /** The unique identifier of the `Message` this attachment belongs to. */
     messageUid: string;
+
+    /**
+     * The unique identifier of the `Folder` the owning `Message` resides in. Denormalized from that `Message`
+     * so permission checks (see the architecture note on `Message.mailboxUid`) don't require a lookup through
+     * it first — an attachment is only ever readable by whoever can read its message, i.e. whoever has
+     * permission on that message's folder.
+     */
+    folderUid: string;
+
+    /** The unique identifier of the `Mailbox` this attachment belongs to. Denormalized purely for convenience
+     * queries that scan a whole mailbox (e.g. `MailboxQuotaRecalcJob`); plays no role in permission checks. */
+    mailboxUid: string;
 
     filename: string;
 
@@ -386,10 +425,21 @@ export interface CalendarEvent extends BaseEntity {
  * @author Jean-Philippe Steinmetz
  */
 export interface CalendarShareLink extends BaseEntity {
-    /** The unique, unguessable token embedded in the shared URL and used as the ACL `userOrRoleId`. */
+    /**
+     * The unique, unguessable token embedded in the shared URL. Anonymous consumption of a share link (e.g. a
+     * public free/busy lookup) is handled by a dedicated endpoint that looks up this token directly and checks
+     * `expiresAt`/`permittedActions` itself — it deliberately does not go through `AccessControlList`/
+     * `ACLUtils` at all, since a token is a narrow, bearer-style grant rather than an identity `ACLUtils` could
+     * resolve a record for.
+     */
     token: string;
 
-    /** The unique identifier of the `Folder` (of type `CALENDAR`) being shared. */
+    /**
+     * The unique identifier of the `Folder` (of type `CALENDAR`) being shared. Managing this share link itself
+     * (create/list/delete, by someone with access to the calendar) is permission-checked against this folder's
+     * `AccessControlList`, the same as every other folder-scoped child entity in this library — see the
+     * architecture note on `Message.mailboxUid`.
+     */
     folderUid: string;
 
     /** The actions (see `ACLAction`) granted to holders of this link, e.g. `["freebusy"]` or `["read"]`. */

@@ -4,5 +4,6 @@ export * from "./EasDeviceStateCleanupJobSQL.js";
 export * from "./ExternalShareExpirationJobSQL.js";
 export * from "./MailboxQuotaRecalcJobSQL.js";
 export * from "./MeetingSchedulingJobSQL.js";
+export * from "./QuarantineRetentionJobSQL.js";
 export * from "./ScanQueueJobSQL.js";
 export * from "./SearchIndexJobSQL.js";

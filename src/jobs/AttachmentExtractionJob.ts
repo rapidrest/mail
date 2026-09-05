@@ -111,8 +111,14 @@ export abstract class AttachmentExtractionJob<A extends Attachment, M extends Me
                 ignoreACL: true,
             });
             if (message?.searchIndexedAt) {
+                // Explicit `null`, not `undefined`: TypeORM's `Repository.update()` silently drops any
+                // property whose value is `undefined` from its generated `SET` clause, so on the SQL backend
+                // an `undefined` here would leave the persisted `searchIndexedAt` completely untouched (still
+                // reporting "already indexed") - a real, confirmed cross-backend bug caught by real-database
+                // testing. MongoDB's own `updateOne($set: ...)` happens to coerce either value to `null`
+                // equivalently, so `null` is correct there too.
                 await this.messageRepo!.update(
-                    { uid: message.uid, version: (message as any).version, searchIndexedAt: undefined } as any,
+                    { uid: message.uid, version: (message as any).version, searchIndexedAt: null } as any,
                     message,
                     { ignoreACL: true, skipPush: true },
                 );

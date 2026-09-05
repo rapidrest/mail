@@ -127,9 +127,14 @@ export abstract class ScanQueueJob<
                 await this.processEntry(entry);
             } catch (err: any) {
                 this.logger?.error(`ScanQueueJob: failed to process ingest entry ${entry.uid}: ${err.message}`);
+                // `entry` may be stale: `processEntry()` may have already bumped this row to SCANNING (and thus
+                // its persisted version) before failing partway through. Updating against that stale version
+                // would optimistically-lock-mismatch and silently affect zero rows on some backends, leaving
+                // the entry stuck at SCANNING forever instead of FAILED - re-fetch the current row first.
+                const current: Q = (await this.ingestQueueRepo!.findOne(entry.uid, { ignoreACL: true })) ?? entry;
                 await this.ingestQueueRepo!.update(
-                    { uid: entry.uid, version: (entry as any).version, status: IngestStatus.FAILED, errorMessage: err.message } as any,
-                    entry,
+                    { uid: entry.uid, version: (current as any).version, status: IngestStatus.FAILED, errorMessage: err.message } as any,
+                    current,
                     { ignoreACL: true },
                 );
             }
@@ -221,6 +226,8 @@ export abstract class ScanQueueJob<
                 await this.attachmentRepo!.create(
                     new this.attachmentClass({
                         messageUid: message.uid,
+                        folderUid: folder.uid,
+                        mailboxUid: entry.mailboxUid,
                         filename: attachment.filename ?? "attachment",
                         mimeType: attachment.contentType,
                         sizeBytes: attachment.content.length,

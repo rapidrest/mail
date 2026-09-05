@@ -23,23 +23,30 @@ const { Column, Entity, Index } = PersistenceDecorators;
         "`BlobStore`, referenced by `blobKey`.",
 )
 @Index("attachment_message", ["messageUid"])
+@Index("attachment_folder", ["folderUid"])
+@Index("attachment_mailbox", ["mailboxUid"])
 @Protect(
     {
         uid: "Attachment",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class AttachmentSQL extends BaseEntity implements Attachment {
     @Column()
     @Description("The unique identifier of the `Message` this attachment belongs to.")
     public messageUid: string = "";
+
+    @Column()
+    @Description("The unique identifier of the `Folder` the owning `Message` resides in.")
+    public folderUid: string = "";
+
+    @Column()
+    @Description("The unique identifier of the `Mailbox` this attachment belongs to.")
+    public mailboxUid: string = "";
 
     @Column()
     @Description("The filename of the attachment.")
@@ -81,6 +88,8 @@ export class AttachmentSQL extends BaseEntity implements Attachment {
 
         if (other) {
             this.messageUid = other.messageUid !== undefined ? other.messageUid : this.messageUid;
+            this.folderUid = other.folderUid !== undefined ? other.folderUid : this.folderUid;
+            this.mailboxUid = other.mailboxUid !== undefined ? other.mailboxUid : this.mailboxUid;
             this.filename = other.filename !== undefined ? other.filename : this.filename;
             this.mimeType = other.mimeType !== undefined ? other.mimeType : this.mimeType;
             this.sizeBytes = other.sizeBytes !== undefined ? other.sizeBytes : this.sizeBytes;

@@ -31,13 +31,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "DeviceSyncState",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class DeviceSyncStateMongo extends BaseMongoEntity implements DeviceSyncState {
     @Column()

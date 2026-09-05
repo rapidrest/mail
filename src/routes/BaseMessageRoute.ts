@@ -4,9 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import {
+    ACLAction,
     ApiErrorMessages,
     ApiErrors,
-    CRUDRoute,
     DocDecorators,
     HttpRequest,
     RepoUtils,
@@ -15,24 +15,27 @@ import {
 import { BlobStore } from "../blob/BlobStore.js";
 import { resolveDeliveryVerdict, ScanPipeline } from "../scan/ScanPipeline.js";
 import { findOrCreateWellKnownFolder } from "../util/FolderUtils.js";
+import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
 import { FolderType, Message, MessageFlags } from "../models/types.js";
 const { Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Param, Post, Request, User: AuthUser } = RouteDecorators;
 
 /**
- * Extends the standard `CRUDRoute` CRUD scaffolding for `Message` with a `send` endpoint that composes,
- * (re-)scans, and relays a drafted message via `MailTransport`, then moves it into the mailbox's Sent Items
- * folder. Ordinary `create`/`update`/`delete`/`find`/`findById` (save-draft, edit-draft, discard-draft, list,
- * fetch) are handled entirely by `CRUDRoute` with no overrides needed — this is the only mail-specific
- * behavior a `Message` needs beyond plain CRUD.
+ * Extends `BaseScopedChildRoute` (scoped by `folderUid` — see the architecture note on `Message.mailboxUid`)
+ * with a `send` endpoint that composes, (re-)scans, and relays a drafted message via `MailTransport`, then
+ * moves it into the mailbox's Sent Items folder. Ordinary `create`/`update`/`delete`/`find`/`findById`
+ * (save-draft, edit-draft, discard-draft, list, fetch) are handled entirely by the base class — this is the
+ * only mail-specific behavior a `Message` needs beyond scoped CRUD.
  *
  * `folderClass` is supplied by the Mongo/SQL concrete subclasses so this class can look up (and, if needed,
  * create) the mailbox's Sent Items folder without depending on either backend directly.
  *
  * @author Jean-Philippe Steinmetz
  */
-export abstract class BaseMessageRoute<T extends Message> extends CRUDRoute<T> {
+export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChildRoute<T> {
+    protected readonly scopeProperty: string = "folderUid";
+
     protected abstract folderClass: any;
 
     private folderRepo?: RepoUtils<any>;
@@ -68,9 +71,12 @@ export abstract class BaseMessageRoute<T extends Message> extends CRUDRoute<T> {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
 
-        const message: T | undefined = await this.repoUtils.findOne(id, { user });
+        const message: T | undefined = await this.repoUtils.findOne(id, { ignoreACL: true });
         if (!message) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+        if (!(await this.aclUtils!.hasPermission(user, message.folderUid, ACLAction.UPDATE))) {
+            throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
         }
 
         // The message's `bodyBlobKey` already holds the fully composed RFC 5322 source (assembled by the
@@ -111,7 +117,7 @@ export abstract class BaseMessageRoute<T extends Message> extends CRUDRoute<T> {
         return await this.repoUtils.update(
             { uid: message.uid, version: (message as any).version, folderUid: sentFolder.uid, flags } as any,
             message,
-            { user },
+            { user, ignoreACL: true },
         );
     }
 }

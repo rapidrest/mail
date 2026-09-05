@@ -2,7 +2,12 @@
 // Copyright (C) 2020-2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+// Used by Mongo-backed test suites (`test/routes/mongo/*`, `test/jobs/mongo/*`) - `acl` and the primary entity
+// datastore are both MongoDB. SQL-backed test suites use `config.sql.ts` instead, which uses a real SQL-backed
+// `acl` datastore (and no `mongo` datastore at all) so a "SQL test" has zero MongoDB dependency.
 import nconf from "nconf";
+import { buildTestConfigDefaults, sqlDatastoreConfig } from "./config-defaults.js";
+
 const conf = nconf.argv().env({
     separator: "__",
     lowerCase: true,
@@ -11,40 +16,22 @@ const conf = nconf.argv().env({
 
 conf.use("memory");
 
-conf.defaults({
-    service_name: "api_service",
-    version: "1.0",
-    cookie_secret: "f0fLSKFJLKWJFe09f32joff098u2fOFIWJ32890fnfnlak",
-    cors: {
-        origins: ["http://localhost:3000"],
-    },
-    datastores: {},
-    // Specifies the group names that are considered to be trusted with administrative privileges.
-    trusted_roles: ["admin"],
-    // Settings pertaining to the signing and verification of authentication tokens
-    auth: {
-        // The default authentication strategy to use
-        strategy: "auth.JWTStrategy",
-        allowQueryParam: true,
-        // The password to be used when signing or verifying authentication tokens
-        secret: "MyPasswordIsSecure",
-        options: {
-            // "algorithm": "HS256",
-            expiresIn: "7 days",
-            audience: "mydomain.com",
-            issuer: "api.mydomain.com",
+conf.defaults(
+    buildTestConfigDefaults({
+        acl: {
+            type: "mongodb",
+            url: "mongodb://localhost:9999/acls",
+            synchronize: true,
         },
-    },
-    rbac: {
-        enabled: false,
-    },
-    session: {
-        secret: "SessionsHaveSecrets",
-    },
-    cluster_url: "http://localhost",
-    metrics: {
-        authRequired: false,
-    },
-});
+        mongo: {
+            type: "mongodb",
+            host: "localhost",
+            port: 9999,
+            database: "rrst-test",
+            synchronize: true,
+        },
+        sql: sqlDatastoreConfig("rrst-test"),
+    }),
+);
 
 export default conf;

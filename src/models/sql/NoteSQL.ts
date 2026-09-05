@@ -25,13 +25,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "Note",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class NoteSQL extends BaseEntity implements Note {
     @Column()

@@ -64,15 +64,31 @@ export abstract class EasDeviceStateCleanupJob<D extends DeviceSyncState> extend
 
         const cutoff: Date = new Date(Date.now() - this.deviceTtlDays * 24 * 60 * 60 * 1000);
 
-        // Staleness can't be reliably pushed into the shared `find()` query DSL across both backends, so this
-        // fetches a batch and filters in-process, same as this job's siblings.
-        const rows: D[] = await this.deviceSyncStateRepo.find({}, { ignoreACL: true, limit: this.batchSize });
+        // `ModelUtils.buildSearchQuery` supports single-sided `lt(...)` comparisons with correct Date
+        // coercion on both backends, so the "stale" half of this job's criteria is pushed into the query. The
+        // "never synced at all" half (`lastSyncAt` unset) is a separate, plain-equality query rather than an
+        // `$or` of the two — `$or` support isn't confirmed identical across both backends' query builders, and
+        // a second bounded query is just as cheap for a low-frequency daily cleanup job.
+        //
+        // `limit` is passed both via `options` (all the Mongo backend of `RepoUtils.find()` actually reads)
+        // *and* baked into each query object (all `ModelUtils.buildSearchQuerySQL` reads - it ignores
+        // `options.limit` entirely and falls back to its own default of 100 otherwise). Confirmed by
+        // real-database testing: on the SQL backend, `options.limit` alone silently caps at 100 regardless of
+        // the configured batch size.
+        const [stale, neverSynced]: [D[], D[]] = await Promise.all([
+            this.deviceSyncStateRepo.find(
+                { lastSyncAt: `lt(${cutoff.toISOString()})`, limit: this.batchSize } as any,
+                { ignoreACL: true, limit: this.batchSize },
+            ),
+            this.deviceSyncStateRepo.find(
+                { lastSyncAt: null, limit: this.batchSize } as any,
+                { ignoreACL: true, limit: this.batchSize },
+            ),
+        ]);
 
-        for (const row of rows) {
+        for (const row of [...stale, ...neverSynced]) {
             try {
-                if (!row.lastSyncAt || row.lastSyncAt < cutoff) {
-                    await this.deviceSyncStateRepo.delete(row.uid, { ignoreACL: true, purge: true });
-                }
+                await this.deviceSyncStateRepo.delete(row.uid, { ignoreACL: true, purge: true });
             } catch (err: any) {
                 this.logger?.warn(`EasDeviceStateCleanupJob: failed to delete stale device sync state ${row.uid}: ${err.message}`);
             }

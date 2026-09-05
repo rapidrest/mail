@@ -67,15 +67,25 @@ export abstract class ExternalShareExpirationJob<S extends CalendarShareLink> ex
 
         const now: Date = new Date();
 
-        // Expiry can't be reliably pushed into the shared `find()` query DSL across both backends, so this
-        // fetches a batch and filters in-process, same as this job's siblings.
-        const links: S[] = await this.calendarShareLinkRepo.find({}, { ignoreACL: true, limit: this.batchSize });
+        // `ModelUtils.buildSearchQuery` supports single-sided `lt(...)`/`gt(...)`/`gte(...)`/`lte(...)`
+        // comparisons with correct Date coercion on both backends (only its two-sided `range(...)` operator
+        // has a documented Date-coercion gap) - a plain `lt(now)` on `expiresAt` also naturally excludes rows
+        // where it's unset, on both Mongo (`$lt` against a missing field never matches) and SQL (comparing
+        // NULL is never true), so this needs no additional in-process filtering for that case.
+        //
+        // `limit` is passed both via `options` (all the Mongo backend of `RepoUtils.find()` actually reads)
+        // *and* baked into the query object itself (all `ModelUtils.buildSearchQuerySQL` reads - it ignores
+        // `options.limit` entirely and falls back to its own default of 100 otherwise). Confirmed by
+        // real-database testing: on the SQL backend, `options.limit` alone silently caps at 100 regardless of
+        // the configured batch size.
+        const links: S[] = await this.calendarShareLinkRepo.find(
+            { expiresAt: `lt(${now.toISOString()})`, limit: this.batchSize } as any,
+            { ignoreACL: true, limit: this.batchSize },
+        );
 
         for (const link of links) {
             try {
-                if (link.expiresAt && link.expiresAt < now) {
-                    await this.calendarShareLinkRepo.delete(link.uid, { ignoreACL: true, purge: true });
-                }
+                await this.calendarShareLinkRepo.delete(link.uid, { ignoreACL: true, purge: true });
             } catch (err: any) {
                 this.logger?.warn(`ExternalShareExpirationJob: failed to delete expired share link ${link.uid}: ${err.message}`);
             }

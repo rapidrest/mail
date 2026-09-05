@@ -31,13 +31,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "ScanResult",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class ScanResultMongo extends BaseMongoEntity implements ScanResult {
     @Column()

@@ -25,16 +25,17 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "ScanResult",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class ScanResultSQL extends BaseEntity implements ScanResult {
-    @Column()
+    // `type: "varchar"` is required on every enum-typed column: TypeScript's `emitDecoratorMetadata` reflects
+    // a string enum's design type as the enum object itself, not a primitive constructor, which TypeORM/
+    // better-sqlite3 cannot resolve into a column type on its own (it would otherwise fail at
+    // `DataSource.initialize()` with "Data type 'undefined' ... is not supported").
+    @Column({ type: "varchar" })
     @Description("The kind of record (`Message` or `Attachment`) that was scanned.")
     public targetType: ScanTargetType = ScanTargetType.MESSAGE;
 
@@ -46,7 +47,7 @@ export class ScanResultSQL extends BaseEntity implements ScanResult {
     @Description("The numeric spam score assigned by the spam scan provider.")
     public spamScore: number = 0;
 
-    @Column()
+    @Column({ type: "varchar" })
     @Description("The overall spam verdict.")
     public spamVerdict: SpamVerdict = SpamVerdict.CLEAN;
 
@@ -54,7 +55,7 @@ export class ScanResultSQL extends BaseEntity implements ScanResult {
     @Description("The symbolic names (e.g. rspamd symbols) that contributed to the spam verdict.")
     public spamSymbols: string[] = [];
 
-    @Column()
+    @Column({ type: "varchar" })
     @Description("The overall antivirus verdict.")
     public avVerdict: AvVerdict = AvVerdict.CLEAN;
 

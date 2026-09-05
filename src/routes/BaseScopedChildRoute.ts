@@ -1,0 +1,233 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import { ApiError, type JWTUser } from "@rapidrest/core";
+import {
+    ACLAction,
+    ApiErrorMessages,
+    ApiErrors,
+    BaseEntity,
+    CRUDRoute,
+    HttpRequest,
+    HttpResponse,
+    RouteDecorators,
+    type UpdateObject,
+} from "@rapidrest/service-core";
+const { Delete, Get, Head, Param, Post, Put, Query, Request, Response, User: AuthUser } = RouteDecorators;
+
+/**
+ * Base CRUD route for any entity that has no `AccessControlList` of its own and is instead permission-checked
+ * against a named "scope" field it carries — `folderUid` for most entities (`Message`, `CalendarEvent`,
+ * `Task`, `Note`, `Contact`, `Attachment`, `CalendarShareLink`), or `mailboxUid` for the one entity with no
+ * folder to belong to (`ContactList`). See the architecture note on `Message.mailboxUid` in `models/types.ts`
+ * for the full rationale, and `BaseFolderRoute` for `Folder`'s own (different) pattern.
+ *
+ * Concrete subclasses set `scopeProperty` to the field name to scope by; everything else is generic. A
+ * `mailboxUid`-scoped concrete class still works identically here since `ACLUtils.hasPermission` resolves any
+ * uid to its `AccessControlList` regardless of which kind of entity that uid actually names.
+ *
+ * IMPORTANT implementation note: this class deliberately does NOT delegate to `ModelRoute`'s `doFind`/
+ * `doCount`/`doFindById`/`doDelete`/`doTruncate`/`doUpdate` helpers, even though `CRUDRoute` (which this
+ * extends) normally does. Those helpers' own internal `RepoUtils.find`/`findOne`/`count`/`truncate` calls do
+ * NOT forward an `ignoreACL: true` passed into the helper's `options` down to that internal call — verified by
+ * reading their source — so calling them after establishing permission below would still hit this library's
+ * deny-by-default class-level ACL and fail. `doCreateObject`/`doBulkCreate` are the exception (verified safe:
+ * they forward `options`, `ignoreACL` included, straight through to `RepoUtils.create()`), so `create()` still
+ * uses them. Every other operation calls `this.repoUtils` directly instead.
+ *
+ * Read-shaped denials (`find`/`count`/`exists`/`findById`) fail quietly (an empty result / zero count / `404`)
+ * rather than `403`, so a caller with no access can't distinguish "records exist but you can't see them" from
+ * "nothing matches". Write-shaped denials (`create`/`update`/`delete`/`truncate`/`updateProperty`) return
+ * `403`, since the caller already knows the target scope/record they were trying to act on.
+ *
+ * @author Jean-Philippe Steinmetz
+ */
+export abstract class BaseScopedChildRoute<T extends BaseEntity> extends CRUDRoute<T> {
+    /** The property name on `T` (and on incoming create bodies / list query params) to check permission by. */
+    protected abstract readonly scopeProperty: string;
+
+    private scopeUidOf(obj: any): string | undefined {
+        return obj?.[this.scopeProperty];
+    }
+
+    private async requirePermission(scopeUid: string | undefined, user: JWTUser | undefined, action: string): Promise<void> {
+        if (!scopeUid || !(await this.aclUtils!.hasPermission(user, scopeUid, action))) {
+            throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
+        }
+    }
+
+    @Head()
+    public async count(
+        @Param() params: any,
+        @Query() query: any,
+        @Response res: HttpResponse,
+        @AuthUser user?: JWTUser,
+    ): Promise<any> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const scopeUid: string | undefined = this.scopeUidOf(query);
+        if (!scopeUid) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
+        }
+        if (!(await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.COUNT))) {
+            return res.status(200).setHeader("content-length", 0);
+        }
+        const result: number = await this.repoUtils.count(
+            { ...query, ...params },
+            { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
+        );
+        return res.status(200).setHeader("content-length", result);
+    }
+
+    @Post()
+    public async create(obj: T | T[], @Request req: HttpRequest, @AuthUser user?: JWTUser): Promise<T | T[]> {
+        const objs: T[] = Array.isArray(obj) ? obj : [obj];
+        for (const single of objs) {
+            await this.requirePermission(this.scopeUidOf(single), user, ACLAction.CREATE);
+        }
+        if (Array.isArray(obj)) {
+            return await this.doBulkCreate(obj, { req, user, ignoreACL: true });
+        }
+        return await this.doCreateObject(obj, { req, user, ignoreACL: true });
+    }
+
+    @Delete("/:id")
+    public async delete(
+        @Param("id") id: string,
+        @Query("version") version: string | undefined,
+        @Query("purge") purge: string | undefined,
+        @Request req: HttpRequest,
+        @AuthUser user?: JWTUser,
+    ): Promise<void> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const existing: T | undefined = await this.repoUtils.findOne(id, { version, ignoreACL: true });
+        if (!existing) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+        await this.requirePermission(this.scopeUidOf(existing), user, ACLAction.DELETE);
+        await this.repoUtils.delete(existing.uid, { user, version, purge: purge === "true", ignoreACL: true });
+    }
+
+    @Head("/:id")
+    public async exists(
+        @Param("id") id: string,
+        @Query() query: any,
+        @Response res: HttpResponse,
+        @AuthUser user?: JWTUser,
+    ): Promise<any> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const existing: T | undefined = await this.repoUtils.findOne(id, {
+            version: query?.version,
+            includeDeleted: query?.deleted === true || query?.deleted === "true",
+            ignoreACL: true,
+        });
+        const scopeUid: string | undefined = existing ? this.scopeUidOf(existing) : undefined;
+        const permitted: boolean = scopeUid ? await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.EXISTS) : false;
+        return permitted
+            ? res.status(200).setHeader("content-length", 1)
+            : res.status(404).setHeader("content-length", 0);
+    }
+
+    @Get()
+    public async find(@Param() params: any, @Query() query: any, @AuthUser user?: JWTUser): Promise<T[]> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const scopeUid: string | undefined = this.scopeUidOf(query);
+        if (!scopeUid) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
+        }
+        if (!(await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.LIST))) {
+            return [];
+        }
+        return await this.repoUtils.find(
+            { ...query, ...params },
+            { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
+        );
+    }
+
+    @Get("/:id")
+    public async findById(@Param("id") id: string, @Query() query: any, @AuthUser user?: JWTUser): Promise<T | null> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const existing: T | undefined = await this.repoUtils.findOne(id, {
+            version: query?.version,
+            includeDeleted: query?.deleted === true || query?.deleted === "true",
+            ignoreACL: true,
+        });
+        const scopeUid: string | undefined = existing ? this.scopeUidOf(existing) : undefined;
+        if (!scopeUid || !(await this.aclUtils!.hasPermission(user, scopeUid, ACLAction.READ))) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+        return existing!;
+    }
+
+    @Delete()
+    public async truncate(@Param() params: any, @Query() query: any, @AuthUser user?: JWTUser): Promise<void> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        await this.requirePermission(this.scopeUidOf(query), user, ACLAction.TRUNCATE);
+        await this.repoUtils.truncate(
+            { ...query, ...params },
+            { limit: query?.limit, page: query?.page, version: query?.version, user, ignoreACL: true },
+        );
+    }
+
+    @Put("/:id")
+    public async update(
+        @Param("id") id: string,
+        obj: UpdateObject<T>,
+        @Request req?: HttpRequest,
+        @AuthUser user?: JWTUser,
+    ): Promise<T> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const existing: T | undefined = await this.repoUtils.findOne(id, { skipCache: true, ignoreACL: true });
+        if (!existing) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+        await this.requirePermission(this.scopeUidOf(existing), user, ACLAction.UPDATE);
+        await this.validate(obj, { user });
+        return await this.repoUtils.update(obj, existing, { user, ignoreACL: true });
+    }
+
+    @Put()
+    public async updateBulk(obj: UpdateObject<T>[], @Request req: HttpRequest, @AuthUser user?: JWTUser): Promise<T[]> {
+        const results: T[] = [];
+        for (const single of obj) {
+            results.push(await this.update(single.uid, single, req, user));
+        }
+        return results;
+    }
+
+    @Put("/:id/:property")
+    public async updateProperty(
+        @Param("id") id: string,
+        @Param("property") propertyName: string,
+        obj: any,
+        @AuthUser user?: JWTUser,
+    ): Promise<T> {
+        if (!this.repoUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        const existing: T | undefined = await this.repoUtils.findOne(id, { ignoreACL: true });
+        if (!existing) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+        return await this.update(
+            id,
+            { uid: existing.uid, version: (existing as any).version, [propertyName]: obj } as any,
+            undefined,
+            user,
+        );
+    }
+}

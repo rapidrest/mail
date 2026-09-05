@@ -5,6 +5,7 @@
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import { ApiErrorMessages, ApiErrors, DocDecorators, ObjectFactory, RepoUtils, RouteDecorators } from "@rapidrest/service-core";
 import { SearchEntityType, SearchProvider, SearchResultPage } from "../search/SearchProvider.js";
+import { resolveCallerMailboxUid } from "../util/MailboxScopeUtils.js";
 import { Mailbox } from "../models/types.js";
 const { Inject, Logger } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
@@ -65,9 +66,8 @@ export abstract class BaseSearchRoute<M extends Mailbox> {
         }
 
         const mailboxRepo: RepoUtils<M> = await this.getMailboxRepo();
-        const mailboxes: M[] = await mailboxRepo.find({ ownerUserUid: user.uid }, { ignoreACL: true, limit: 1 });
-        const mailbox: M | undefined = mailboxes[0];
-        if (!mailbox) {
+        const mailboxUid: string | undefined = await resolveCallerMailboxUid(mailboxRepo, user);
+        if (!mailboxUid) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
 
@@ -76,7 +76,7 @@ export abstract class BaseSearchRoute<M extends Mailbox> {
             : undefined;
 
         return await this.searchProvider.search({
-            mailboxUid: mailbox.uid,
+            mailboxUid,
             text,
             entityTypes,
             cursor,

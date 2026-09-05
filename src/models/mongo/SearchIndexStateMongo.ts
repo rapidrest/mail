@@ -33,13 +33,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "SearchIndexState",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class SearchIndexStateMongo extends BaseMongoEntity implements SearchIndexState {
     @Column()

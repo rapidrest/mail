@@ -30,13 +30,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "Message",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class MessageSQL extends BaseEntity implements Message {
     @Column()
@@ -83,7 +80,11 @@ export class MessageSQL extends BaseEntity implements Message {
     @Description("The read/answered/flagged state of the message.")
     public flags: MessageFlags = { read: false, flagged: false, answered: false, forwarded: false };
 
-    @Column()
+    // `type: "varchar"` is required on every enum-typed column: TypeScript's `emitDecoratorMetadata` reflects
+    // a string enum's design type as the enum object itself, not a primitive constructor, which TypeORM/
+    // better-sqlite3 cannot resolve into a column type on its own (it would otherwise fail at
+    // `DataSource.initialize()` with "Data type 'undefined' ... is not supported").
+    @Column({ type: "varchar" })
     @Description("The importance level of the message.")
     public importance: MessageImportance = MessageImportance.NORMAL;
 

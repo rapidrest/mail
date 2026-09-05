@@ -78,6 +78,9 @@ export abstract class MeetingSchedulingJob<CE extends CalendarEvent> extends Bac
                     needingInvite++;
                 }
             } catch (err: any) {
+                /* v8 ignore next -- unreachable via real data: `event.attendees` round-trips through Mongo
+                   BSON or a SQL `simple-json` column as a plain array or is absent entirely; no real write
+                   path can produce a value that survives `find()` yet throws on `&&`/`.length` here. */
                 this.logger?.warn(`MeetingSchedulingJob: failed to inspect event ${event.uid}: ${err.message}`);
             }
         }

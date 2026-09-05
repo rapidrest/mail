@@ -43,15 +43,23 @@ export async function findOrCreateWellKnownFolder<F extends Folder>(
         return existing[0];
     }
 
-    return await folderRepo.create(
-        new folderClass({
-            mailboxUid,
-            name: DEFAULT_FOLDER_NAMES[type],
-            type,
-            unreadCount: 0,
-            totalCount: 0,
-            syncKeyVersion: 0,
-        }),
-        { user, ignoreACL: true },
-    );
+    const instance: F = new folderClass({
+        mailboxUid,
+        name: DEFAULT_FOLDER_NAMES[type],
+        type,
+        unreadCount: 0,
+        totalCount: 0,
+        syncKeyVersion: 0,
+    });
+
+    // `parentUid` must be set explicitly to the owning mailbox's ACL uid — without it, `RepoUtils.create()`'s
+    // default (parenting to the `Folder` *class* ACL, which is deny-all) would leave this folder unreachable
+    // by anyone, including the mailbox's own owner, once a real per-record ACL exists for `Folder` (see the
+    // architecture note on `Message.mailboxUid`). Matches `BaseFolderRoute.create()`'s same seeding for
+    // client-initiated folder creation.
+    return await folderRepo.create(instance, {
+        user,
+        ignoreACL: true,
+        acl: { uid: instance.uid, parentUid: mailboxUid, records: [] },
+    });
 }

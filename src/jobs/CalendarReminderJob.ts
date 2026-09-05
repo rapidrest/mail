@@ -12,10 +12,10 @@ const { Config, Init, Inject, Logger } = ObjectDecorators;
  * configured `reminderMinutesBeforeStart` fire time falls within this job's own polling window.
  *
  * `CalendarEvent` has no persisted "reminder already sent" flag, and adding one is out of scope here, so this
- * job takes the simplest correct-enough approach: fetch a batch of candidate events (up to 24 hours out) and
- * compute/filter everything in-process rather than pushing the reminder-time arithmetic (or even the `startDate`
- * range itself) into the query - the shared `find()` query DSL is not guaranteed to translate range comparisons
- * identically across the Mongo and SQL backends, so filtering happens entirely here instead.
+ * job takes the simplest correct-enough approach: the query only prunes past events (`startDate` lower-bounded
+ * at `now`, via `ModelUtils.buildSearchQuery`'s single-sided `gte(...)` operator, which - unlike its two-sided
+ * `range(...)` operator - has confirmed correct Date coercion on both backends), and everything else (the
+ * upper lookahead bound, and the actual reminder-fire-time arithmetic) is computed/filtered in-process.
  *
  * KNOWN LIMITATION: without a persisted "reminder already sent" flag (e.g. a future `CalendarEvent.
  * reminderSentAt`), a reminder could in principle fire more than once if this job's own polling window ever
@@ -81,14 +81,19 @@ export abstract class CalendarReminderJob<CE extends CalendarEvent> extends Back
         // by comparing each candidate's computed reminder fire time against [now, windowEnd].
         const lookaheadEnd: Date = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-        const candidates: CE[] = await this.calendarEventRepo.find({}, { ignoreACL: true, limit: this.batchSize });
+        const candidates: CE[] = await this.calendarEventRepo.find(
+            { startDate: `gte(${now.toISOString()})` },
+            { ignoreACL: true, limit: this.batchSize },
+        );
 
         for (const event of candidates) {
             try {
                 if (event.reminderMinutesBeforeStart === undefined || event.reminderMinutesBeforeStart === null) {
                     continue;
                 }
-                if (event.startDate < now || event.startDate > lookaheadEnd) {
+                // The query already lower-bounds `startDate` at `now`; only the upper lookahead bound needs
+                // checking here.
+                if (event.startDate > lookaheadEnd) {
                     continue;
                 }
 

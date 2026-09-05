@@ -34,13 +34,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "QuarantineEntry",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class QuarantineEntryMongo extends BaseMongoEntity implements QuarantineEntry {
     @Column()

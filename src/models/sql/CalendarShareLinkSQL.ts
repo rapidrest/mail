@@ -29,13 +29,10 @@ const { Column, Entity, Index } = PersistenceDecorators;
         uid: "CalendarShareLink",
         records: [
             { userOrRoleId: "anonymous", actions: [] },
-            {
-                userOrRoleId: ".*",
-                actions: [ACLAction.COUNT, ACLAction.CREATE, ACLAction.EXISTS, ACLAction.LIST, ACLAction.READ],
-            },
+            { userOrRoleId: ".*", actions: [] },
         ],
     },
-    true,
+    false,
 )
 export class CalendarShareLinkSQL extends BaseEntity implements CalendarShareLink {
     @Column()

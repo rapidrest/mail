@@ -80,7 +80,16 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
         // No obvious "least-recently-recalculated" field exists on `Mailbox` to sort by, so this simply
         // processes the first page each run - acceptable since this is cheap, idempotent drift-correction, not
         // correctness-critical delivery.
-        const mailboxes: MB[] = await this.mailboxRepo.find({}, { ignoreACL: true, limit: this.batchSize });
+        //
+        // `limit` is passed both via `options` (which is all the Mongo backend of `RepoUtils.find()` actually
+        // reads) *and* baked into the query object itself (which is all `ModelUtils.buildSearchQuerySQL` reads
+        // - it ignores `options.limit` entirely and falls back to its own default of 100 otherwise). Confirmed
+        // by real-database testing: on the SQL backend, `options.limit` alone silently caps at 100 regardless
+        // of the configured batch size, rather than the requested value.
+        const mailboxes: MB[] = await this.mailboxRepo.find(
+            { limit: this.batchSize } as any,
+            { ignoreACL: true, limit: this.batchSize },
+        );
 
         for (const mailbox of mailboxes) {
             try {
@@ -120,9 +129,23 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
         // Skip the write entirely when nothing has drifted - this job runs frequently and most mailboxes won't
         // have drifted, so avoiding a no-op update() call (and the version bump/push it would trigger) matters.
         if (usedBytes !== mailbox.usedBytes) {
+            // `mailbox` came from `run()`'s own `find()` call, which - unlike `findOne()` - returns a plain,
+            // un-hydrated document on the Mongo backend rather than a real model instance. `RepoUtils.update()`
+            // branches its optimistic-lock check, version bump, and `dateModified` refresh entirely on an
+            // `instanceof BaseEntity` check, and silently skips all three (a confirmed real cross-backend bug,
+            // caught by real-database testing: the write still applies `usedBytes`, but leaves `version` and
+            // `dateModified` untouched) when that check comes back false. Re-fetching via `findOne()` right
+            // before the write - the same defensive pattern `ScanQueueJob` already uses for its own updates -
+            // sidesteps the bug and also guards against `mailbox`'s version having gone stale during this
+            // method's own async work above.
+            // The `?? mailbox` fallback only matters if the mailbox was deleted out from under this run between
+            // the initial `find()` and this `findOne()` a few lines later - unreachable in any realistic single
+            // -process test without artificially deleting the row mid-`run()` to win that race, so it's
+            // intentionally left uncovered rather than contrived.
+            const current: MB = (await this.mailboxRepo!.findOne(mailbox.uid, { ignoreACL: true })) ?? mailbox;
             await this.mailboxRepo!.update(
-                { uid: mailbox.uid, version: (mailbox as any).version, usedBytes } as any,
-                mailbox,
+                { uid: current.uid, version: (current as any).version, usedBytes } as any,
+                current,
                 { ignoreACL: true, skipPush: true },
             );
         }

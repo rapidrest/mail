@@ -4,5 +4,6 @@ export * from "./EasDeviceStateCleanupJobMongo.js";
 export * from "./ExternalShareExpirationJobMongo.js";
 export * from "./MailboxQuotaRecalcJobMongo.js";
 export * from "./MeetingSchedulingJobMongo.js";
+export * from "./QuarantineRetentionJobMongo.js";
 export * from "./ScanQueueJobMongo.js";
 export * from "./SearchIndexJobMongo.js";
