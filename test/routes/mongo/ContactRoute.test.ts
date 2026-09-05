@@ -473,8 +473,11 @@ describe("Route:ContactMongo Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // `Contact` extends `RecoverableBaseEntity` (soft delete) so EAS `Sync` can later report the deletion
+        // to an already-synced device - the row stays present with `deleted: true` rather than being
+        // physically removed. See the identical note on `CalendarEventRoute.test.ts`.
         const existing = await contactRepo.findOne({ uid: contact.uid } as any);
-        expect(existing).toBeNull();
+        expect(existing?.deleted).toBe(true);
     });
 
     it("Publishes a live-update notification to the folder's channel on delete.", async () => {

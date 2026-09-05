@@ -2,7 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ACLAction, BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
+import {
+    ACLAction,
+    DocDecorators,
+    ModelDecorators,
+    PersistenceDecorators,
+    RecoverableBaseEntity,
+} from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Folder, FolderType } from "../types.js";
 const { Description } = DocDecorators;
@@ -34,7 +40,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     true,
 )
-export class FolderSQL extends BaseEntity implements Folder {
+export class FolderSQL extends RecoverableBaseEntity implements Folder {
     @Column()
     @Description("The unique identifier of the `Mailbox` this folder belongs to.")
     public mailboxUid: string = "";

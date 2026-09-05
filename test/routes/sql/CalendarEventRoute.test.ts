@@ -312,6 +312,24 @@ describe("Route:CalendarEventSQL Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // See the identical note in test/routes/mongo/CalendarEventRoute.test.ts - `CalendarEvent` is now a
+        // `RecoverableBaseEntity` (soft delete), so the raw row stays present with `deleted: true`.
+        const existing = await calendarEventRepo.findOne({ where: { uid: event.uid } });
+        expect(existing?.deleted).toBe(true);
+    });
+
+    it("Owner can permanently purge a calendar event via ?purge=true (real hard delete, no soft-delete row left behind).", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const event = await createCalendarEvent(mailbox.uid, folder.uid);
+
+        const result = await request(server.getApplication())
+            .delete(`${baseUrl}/${event.uid}?purge=true`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+
         const existing = await calendarEventRepo.findOne({ where: { uid: event.uid } });
         expect(existing).toBeNull();
     });

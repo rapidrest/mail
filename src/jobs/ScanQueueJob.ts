@@ -8,6 +8,7 @@ import { BackgroundService, NotificationUtils, ObjectFactory, RepoUtils } from "
 import { BlobStore } from "../blob/BlobStore.js";
 import { resolveDeliveryVerdict, ScanPipeline, ScanPipelineResult } from "../scan/ScanPipeline.js";
 import { findOrCreateWellKnownFolder } from "../util/FolderUtils.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import {
     Attachment,
     AvVerdict,
@@ -55,8 +56,8 @@ export abstract class ScanQueueJob<
     private _objectFactory?: ObjectFactory;
 
     private ingestQueueRepo?: RepoUtils<Q>;
-    private folderRepo?: RepoUtils<F>;
-    private messageRepo?: RepoUtils<M>;
+    private folderRepo?: RecoverableRepoUtils<F>;
+    private messageRepo?: RecoverableRepoUtils<M>;
     private attachmentRepo?: RepoUtils<A>;
     private quarantineEntryRepo?: RepoUtils<QE>;
     private scanResultRepo?: RepoUtils<SR>;
@@ -90,11 +91,11 @@ export abstract class ScanQueueJob<
             name: this.ingestQueueClass.name,
             args: [this.ingestQueueClass],
         });
-        this.folderRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.folderRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.folderClass.name,
             args: [this.folderClass],
         });
-        this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.messageRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.messageClass.name,
             args: [this.messageClass],
         });

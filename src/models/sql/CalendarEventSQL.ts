@@ -2,7 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ACLAction, BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
+import {
+    ACLAction,
+    DocDecorators,
+    ModelDecorators,
+    PersistenceDecorators,
+    RecoverableBaseEntity,
+} from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import {
     Attendee,
@@ -39,7 +45,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class CalendarEventSQL extends BaseEntity implements CalendarEvent {
+export class CalendarEventSQL extends RecoverableBaseEntity implements CalendarEvent {
     @Column()
     @Description("The unique identifier of the `Folder` (of type `CALENDAR`) this event resides in.")
     public folderUid: string = "";

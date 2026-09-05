@@ -10,12 +10,12 @@ import {
     ApiErrors,
     DocDecorators,
     HttpRequest,
-    RepoUtils,
     RouteDecorators,
 } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
 import { resolveDeliveryVerdict, ScanPipeline } from "../scan/ScanPipeline.js";
 import { findOrCreateWellKnownFolder } from "../util/FolderUtils.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
 import { FolderType, Message, MessageFlags } from "../models/types.js";
 const { Inject } = ObjectDecorators;
@@ -39,7 +39,7 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
 
     protected abstract folderClass: any;
 
-    private folderRepo?: RepoUtils<any>;
+    private folderRepo?: RecoverableRepoUtils<any>;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
@@ -50,9 +50,9 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
     @Inject(ScanPipeline)
     private scanPipeline?: ScanPipeline;
 
-    private async getFolderRepo(): Promise<RepoUtils<any>> {
+    private async getFolderRepo(): Promise<RecoverableRepoUtils<any>> {
         if (!this.folderRepo) {
-            this.folderRepo = await this._objectFactory!.newInstance(RepoUtils, {
+            this.folderRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
                 name: this.folderClass.name,
                 args: [this.folderClass],
             });
@@ -105,7 +105,7 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 502, "The mail transport rejected this message.");
         }
 
-        const folderRepo: RepoUtils<any> = await this.getFolderRepo();
+        const folderRepo: RecoverableRepoUtils<any> = await this.getFolderRepo();
         const sentFolder: any = await findOrCreateWellKnownFolder(
             folderRepo,
             this.folderClass,

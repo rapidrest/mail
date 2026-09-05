@@ -5,6 +5,7 @@
 import { ObjectDecorators } from "@rapidrest/core";
 import { BackgroundService, BaseEntity, ObjectFactory, RepoUtils, SimpleEntity } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { Attachment, Mailbox, Message } from "../models/types.js";
 const { Config, Init, Inject, Logger } = ObjectDecorators;
 
@@ -29,7 +30,7 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
     private _objectFactory?: ObjectFactory;
 
     private mailboxRepo?: RepoUtils<MB>;
-    private messageRepo?: RepoUtils<M>;
+    private messageRepo?: RecoverableRepoUtils<M>;
     private attachmentRepo?: RepoUtils<A>;
 
     @Inject("BlobStore")
@@ -54,7 +55,7 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
             name: this.mailboxClass.name,
             args: [this.mailboxClass],
         });
-        this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.messageRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.messageClass.name,
             args: [this.messageClass],
         });

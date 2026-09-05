@@ -7,6 +7,7 @@ import { ObjectDecorators } from "@rapidrest/core";
 import { BackgroundService, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
 import { ExtractorRegistry } from "../search/extraction/ExtractorRegistry.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { Attachment, Message } from "../models/types.js";
 const { Config, Init, Inject, Logger } = ObjectDecorators;
 
@@ -32,7 +33,7 @@ export abstract class AttachmentExtractionJob<A extends Attachment, M extends Me
     private _objectFactory?: ObjectFactory;
 
     private attachmentRepo?: RepoUtils<A>;
-    private messageRepo?: RepoUtils<M>;
+    private messageRepo?: RecoverableRepoUtils<M>;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
@@ -58,7 +59,7 @@ export abstract class AttachmentExtractionJob<A extends Attachment, M extends Me
             name: this.attachmentClass.name,
             args: [this.attachmentClass],
         });
-        this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.messageRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.messageClass.name,
             args: [this.messageClass],
         });

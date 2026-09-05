@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { BaseEntity } from "@rapidrest/service-core";
+import { BaseEntity, RecoverableBaseEntity } from "@rapidrest/service-core";
 
 /**
  * The kind of well-known folder a `Folder` represents. `USER` is any folder created by the mailbox owner
@@ -55,9 +55,13 @@ export interface Mailbox extends BaseEntity {
  * Defines a single folder within a `Mailbox`. Folders form a hierarchy via `parentFolderUid` and hold
  * `Message`, `CalendarEvent`, `Contact`, `Task`, or `Note` records depending on `type`.
  *
+ * Extends `RecoverableBaseEntity` (soft delete, `deleted: boolean`) rather than plain `BaseEntity` so EAS
+ * `FolderSync` can report a removed folder to an already-synced device — see `RecoverableRepoUtils` (in
+ * `util/`) and `eas/EasSyncKeyUtils.ts` for the mechanism this backs.
+ *
  * @author Jean-Philippe Steinmetz
  */
-export interface Folder extends BaseEntity {
+export interface Folder extends RecoverableBaseEntity {
     /** The unique identifier of the `Mailbox` this folder belongs to. */
     mailboxUid: string;
 
@@ -117,9 +121,12 @@ export enum MessageImportance {
  * stored inline on this record — they live in the configured `BlobStore`, referenced by
  * `bodyBlobKey`/`sanitizedHtmlBlobKey`.
  *
+ * Extends `RecoverableBaseEntity` (soft delete, `deleted: boolean`) rather than plain `BaseEntity` — see the
+ * identical note on `Folder`.
+ *
  * @author Jean-Philippe Steinmetz
  */
-export interface Message extends BaseEntity {
+export interface Message extends RecoverableBaseEntity {
     /** The unique identifier of the `Folder` this message currently resides in. */
     folderUid: string;
 
@@ -272,9 +279,12 @@ export interface ContactPostalAddress {
  * Defines a single address book entry. Contacts are also the source of truth for MAPI NSPI and EAS GAL
  * (Global Address List) lookups against a mailbox's own address book.
  *
+ * Extends `RecoverableBaseEntity` (soft delete, `deleted: boolean`) rather than plain `BaseEntity` — see the
+ * identical note on `Folder`.
+ *
  * @author Jean-Philippe Steinmetz
  */
-export interface Contact extends BaseEntity {
+export interface Contact extends RecoverableBaseEntity {
     /** The unique identifier of the `Mailbox` this contact belongs to. */
     mailboxUid: string;
 
@@ -381,9 +391,12 @@ export enum BusyStatus {
  * `ACLAction`), not by any field on this type — see the architecture plan for the `"read"`/`"freebusy"`/
  * `"edit"`/`"delegate"` action convention.
  *
+ * Extends `RecoverableBaseEntity` (soft delete, `deleted: boolean`) rather than plain `BaseEntity` — see the
+ * identical note on `Folder`.
+ *
  * @author Jean-Philippe Steinmetz
  */
-export interface CalendarEvent extends BaseEntity {
+export interface CalendarEvent extends RecoverableBaseEntity {
     /** The unique identifier of the `Folder` (of type `CALENDAR`) this event resides in. */
     folderUid: string;
 
@@ -474,9 +487,12 @@ export enum TaskPriority {
 /**
  * Defines a single to-do item stored in a `Folder` of type `TASKS`.
  *
+ * Extends `RecoverableBaseEntity` (soft delete, `deleted: boolean`) rather than plain `BaseEntity` — see the
+ * identical note on `Folder`.
+ *
  * @author Jean-Philippe Steinmetz
  */
-export interface Task extends BaseEntity {
+export interface Task extends RecoverableBaseEntity {
     mailboxUid: string;
 
     folderUid: string;

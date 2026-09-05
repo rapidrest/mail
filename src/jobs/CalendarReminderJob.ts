@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
-import { BackgroundService, NotificationUtils, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
+import { BackgroundService, NotificationUtils, ObjectFactory } from "@rapidrest/service-core";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { CalendarEvent } from "../models/types.js";
 const { Config, Init, Inject, Logger } = ObjectDecorators;
 
@@ -33,7 +34,7 @@ export abstract class CalendarReminderJob<CE extends CalendarEvent> extends Back
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
 
-    private calendarEventRepo?: RepoUtils<CE>;
+    private calendarEventRepo?: RecoverableRepoUtils<CE>;
 
     @Inject(NotificationUtils)
     private notificationUtils?: NotificationUtils;
@@ -56,7 +57,7 @@ export abstract class CalendarReminderJob<CE extends CalendarEvent> extends Back
 
     @Init
     public async init(): Promise<void> {
-        this.calendarEventRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.calendarEventRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.calendarEventClass.name,
             args: [this.calendarEventClass],
         });

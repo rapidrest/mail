@@ -2,7 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ACLAction, BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
+import {
+    ACLAction,
+    DocDecorators,
+    ModelDecorators,
+    PersistenceDecorators,
+    RecoverableBaseEntity,
+} from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Contact, ContactEmail, ContactPhone, ContactPostalAddress } from "../types.js";
 const { Description } = DocDecorators;
@@ -34,7 +40,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class ContactSQL extends BaseEntity implements Contact {
+export class ContactSQL extends RecoverableBaseEntity implements Contact {
     @Column()
     @Description("The unique identifier of the `Mailbox` this contact belongs to.")
     public mailboxUid: string = "";

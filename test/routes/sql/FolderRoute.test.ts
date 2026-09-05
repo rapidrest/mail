@@ -246,8 +246,10 @@ describe("Route:FolderSQL Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // See the identical note in test/routes/mongo/FolderRoute.test.ts - `Folder` is now a
+        // `RecoverableBaseEntity` (soft delete), so the raw row stays present with `deleted: true`.
         const existing = await folderRepo.findOne({ where: { uid: folder.uid } });
-        expect(existing).toBeNull();
+        expect(existing?.deleted).toBe(true);
     });
 
     // See the identical describe block in test/routes/mongo/FolderRoute.test.ts for the full rationale - this

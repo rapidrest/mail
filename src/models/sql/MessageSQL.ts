@@ -2,7 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { ACLAction, BaseEntity, DocDecorators, ModelDecorators, PersistenceDecorators } from "@rapidrest/service-core";
+import {
+    ACLAction,
+    DocDecorators,
+    ModelDecorators,
+    PersistenceDecorators,
+    RecoverableBaseEntity,
+} from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Message, MessageFlags, MessageImportance, Recipient, RecipientType } from "../types.js";
 const { Description } = DocDecorators;
@@ -36,7 +42,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class MessageSQL extends BaseEntity implements Message {
+export class MessageSQL extends RecoverableBaseEntity implements Message {
     @Column()
     @Description("The unique identifier of the `Folder` this message currently resides in.")
     public folderUid: string = "";

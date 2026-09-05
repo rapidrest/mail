@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import {
     ACLAction,
-    BaseMongoEntity,
     DocDecorators,
     ModelDecorators,
     PersistenceDecorators,
+    RecoverableBaseMongoEntity,
 } from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Contact, ContactEmail, ContactPhone, ContactPostalAddress } from "../types.js";
@@ -40,7 +40,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class ContactMongo extends BaseMongoEntity implements Contact {
+export class ContactMongo extends RecoverableBaseMongoEntity implements Contact {
     @Column()
     @Description("The unique identifier of the `Mailbox` this contact belongs to.")
     public mailboxUid: string = "";

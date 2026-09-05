@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import {
     ACLAction,
-    BaseMongoEntity,
     DocDecorators,
     ModelDecorators,
     PersistenceDecorators,
+    RecoverableBaseMongoEntity,
 } from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Message, MessageFlags, MessageImportance, Recipient, RecipientType } from "../types.js";
@@ -42,7 +42,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class MessageMongo extends BaseMongoEntity implements Message {
+export class MessageMongo extends RecoverableBaseMongoEntity implements Message {
     @Column()
     @Description("The unique identifier of the `Folder` this message currently resides in.")
     public folderUid: string = "";

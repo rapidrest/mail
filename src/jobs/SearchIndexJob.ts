@@ -7,6 +7,7 @@ import { ObjectDecorators } from "@rapidrest/core";
 import { BackgroundService, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
 import { SearchDocument, SearchProvider } from "../search/SearchProvider.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { Attachment, Message } from "../models/types.js";
 const { Config, Init, Inject, Logger } = ObjectDecorators;
 
@@ -34,7 +35,7 @@ export abstract class SearchIndexJob<M extends Message, A extends Attachment> ex
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
 
-    private messageRepo?: RepoUtils<M>;
+    private messageRepo?: RecoverableRepoUtils<M>;
     private attachmentRepo?: RepoUtils<A>;
 
     @Inject("BlobStore")
@@ -58,7 +59,7 @@ export abstract class SearchIndexJob<M extends Message, A extends Attachment> ex
 
     @Init
     public async init(): Promise<void> {
-        this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.messageRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.messageClass.name,
             args: [this.messageClass],
         });

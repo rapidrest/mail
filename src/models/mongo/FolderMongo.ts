@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import {
     ACLAction,
-    BaseMongoEntity,
     DocDecorators,
     ModelDecorators,
     PersistenceDecorators,
+    RecoverableBaseMongoEntity,
 } from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Folder, FolderType } from "../types.js";
@@ -40,7 +40,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     true,
 )
-export class FolderMongo extends BaseMongoEntity implements Folder {
+export class FolderMongo extends RecoverableBaseMongoEntity implements Folder {
     @Column()
     @Description("The unique identifier of the `Mailbox` this folder belongs to.")
     public mailboxUid: string = "";

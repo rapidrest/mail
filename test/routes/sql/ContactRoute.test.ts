@@ -316,8 +316,10 @@ describe("Route:ContactSQL Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // See the identical note in test/routes/mongo/ContactRoute.test.ts - `Contact` is now a
+        // `RecoverableBaseEntity` (soft delete), so the raw row stays present with `deleted: true`.
         const existing = await contactRepo.findOne({ where: { uid: contact.uid } });
-        expect(existing).toBeNull();
+        expect(existing?.deleted).toBe(true);
     });
 
     it("Can make a count request scoped to a folder the caller has access to.", async () => {

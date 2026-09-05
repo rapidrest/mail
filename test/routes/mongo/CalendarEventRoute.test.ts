@@ -325,6 +325,27 @@ describe("Route:CalendarEventMongo Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // `CalendarEvent` extends `RecoverableBaseEntity` (soft delete) so EAS `Sync` can later report the
+        // deletion to an already-synced device - the row itself stays present with `deleted: true` rather
+        // than being physically removed. Querying the raw driver directly (bypassing `RepoUtils`'s own
+        // default `deleted`-exclusion filtering) surfaces that row, so this checks its `deleted` flag instead
+        // of expecting the document to be gone.
+        const existing = await calendarEventRepo.findOne({ uid: event.uid } as any);
+        expect(existing?.deleted).toBe(true);
+    });
+
+    it("Owner can permanently purge a calendar event via ?purge=true (real hard delete, no soft-delete row left behind).", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid);
+        const event = await createCalendarEvent(mailbox.uid, folder.uid);
+
+        const result = await request(server.getApplication())
+            .delete(`${baseUrl}/${event.uid}?purge=true`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBeGreaterThanOrEqual(200);
+        expect(result.status).toBeLessThan(300);
+
         const existing = await calendarEventRepo.findOne({ uid: event.uid } as any);
         expect(existing).toBeNull();
     });

@@ -371,8 +371,11 @@ describe("Route:FolderMongo Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // `Folder` extends `RecoverableBaseEntity` (soft delete) so EAS `FolderSync` can later report the
+        // removal to an already-synced device - the row stays present with `deleted: true` rather than being
+        // physically removed. See the identical note on `CalendarEventRoute.test.ts`.
         const existing = await folderRepo.findOne({ uid: folder.uid } as any);
-        expect(existing).toBeNull();
+        expect(existing?.deleted).toBe(true);
     });
 
     // `exists()` checks permission against the folder's OWN resolved ACL (unlike `find`/`count`, which check

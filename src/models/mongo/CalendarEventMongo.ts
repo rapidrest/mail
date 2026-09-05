@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import {
     ACLAction,
-    BaseMongoEntity,
     DocDecorators,
     ModelDecorators,
     PersistenceDecorators,
+    RecoverableBaseMongoEntity,
 } from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import {
@@ -45,7 +45,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class CalendarEventMongo extends BaseMongoEntity implements CalendarEvent {
+export class CalendarEventMongo extends RecoverableBaseMongoEntity implements CalendarEvent {
     @Column()
     @Description("The unique identifier of the `Folder` (of type `CALENDAR`) this event resides in.")
     public folderUid: string = "";

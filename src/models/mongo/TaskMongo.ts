@@ -4,10 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import {
     ACLAction,
-    BaseMongoEntity,
     DocDecorators,
     ModelDecorators,
     PersistenceDecorators,
+    RecoverableBaseMongoEntity,
 } from "@rapidrest/service-core";
 import { ObjectDecorators } from "@rapidrest/core";
 import { Task, TaskPriority } from "../types.js";
@@ -36,7 +36,7 @@ const { Column, Entity, Index } = PersistenceDecorators;
     },
     false,
 )
-export class TaskMongo extends BaseMongoEntity implements Task {
+export class TaskMongo extends RecoverableBaseMongoEntity implements Task {
     @Column()
     @Description("The unique identifier of the `Mailbox` this task belongs to.")
     public mailboxUid: string = "";

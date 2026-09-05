@@ -281,8 +281,10 @@ describe("Route:TaskSQL Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // See the identical note in test/routes/mongo/TaskRoute.test.ts - `Task` is now a
+        // `RecoverableBaseEntity` (soft delete), so the raw row stays present with `deleted: true`.
         const existing = await taskRepo.findOne({ where: { uid: task.uid } });
-        expect(existing).toBeNull();
+        expect(existing?.deleted).toBe(true);
     });
 
     it("Can make a count request scoped to a folder the caller has access to.", async () => {

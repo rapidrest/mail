@@ -11,10 +11,10 @@ import {
     DocDecorators,
     HttpRequest,
     HttpResponse,
-    RepoUtils,
     RouteDecorators,
 } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
 import { Attachment, Message } from "../models/types.js";
 const { Inject } = ObjectDecorators;
@@ -37,14 +37,14 @@ export abstract class BaseAttachmentRoute<T extends Attachment, M extends Messag
     /** The class of the owning `Message` entity, supplied by the Mongo/SQL concrete subclass. */
     protected abstract messageClass: any;
 
-    private messageRepo?: RepoUtils<M>;
+    private messageRepo?: RecoverableRepoUtils<M>;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
 
-    private async getMessageRepo(): Promise<RepoUtils<M>> {
+    private async getMessageRepo(): Promise<RecoverableRepoUtils<M>> {
         if (!this.messageRepo) {
-            this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+            this.messageRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
                 name: this.messageClass.name,
                 args: [this.messageClass],
             });
@@ -82,7 +82,7 @@ export abstract class BaseAttachmentRoute<T extends Attachment, M extends Messag
         // its own). Resolving the message server-side and checking permission against *its* `folderUid` closes
         // that gap entirely: an attacker can no longer create an attachment against a message they don't have
         // UPDATE access to, regardless of what folder/mailbox uids they supply.
-        const messageRepo: RepoUtils<M> = await this.getMessageRepo();
+        const messageRepo: RecoverableRepoUtils<M> = await this.getMessageRepo();
         const message: M | undefined = await messageRepo.findOne(messageUid, { ignoreACL: true });
         if (!message) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);

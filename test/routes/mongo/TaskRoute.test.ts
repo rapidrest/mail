@@ -294,8 +294,11 @@ describe("Route:TaskMongo Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
+        // `Task` extends `RecoverableBaseEntity` (soft delete) so EAS `Sync` can later report the deletion to
+        // an already-synced device - the row stays present with `deleted: true` rather than being physically
+        // removed. See the identical note on `CalendarEventRoute.test.ts`.
         const existing = await taskRepo.findOne({ uid: task.uid } as any);
-        expect(existing).toBeNull();
+        expect(existing?.deleted).toBe(true);
     });
 
     it("Can make a count request scoped to a folder the caller has access to.", async () => {
