@@ -101,14 +101,10 @@ export abstract class BaseEasRoute<D extends DeviceSyncState, M extends Mailbox 
             name: this.mailboxClass.name,
             args: [this.mailboxClass],
         });
-        /* v8 ignore start -- unreachable until a concrete subclass populates `commandHandlerClasses`: it's
-           empty in this transitional step (see the class doc comment), so this loop never iterates. Exercised
-           once `ProvisionCommand`/`FolderSyncCommand`/etc. are registered. */
         for (const HandlerClass of this.commandHandlerClasses) {
             const handler: EasCommandHandler = await this._objectFactory!.newInstance(HandlerClass);
             this.handlers.set(handler.command, handler);
         }
-        /* v8 ignore stop */
     }
 
     @Auth(["jwt"])
@@ -150,11 +146,6 @@ export abstract class BaseEasRoute<D extends DeviceSyncState, M extends Mailbox 
             return;
         }
 
-        /* v8 ignore start -- unreachable until a real command handler is registered: `commandHandlerClasses`
-           is empty in this transitional step (the WBXML/transport skeleton lands before any command logic
-           does - see the class doc comment), so `handler` above is always `undefined` and every request
-           returns via the `501` branch just above before reaching here. Exercised once `ProvisionCommand`/
-           `FolderSyncCommand`/etc. are registered by a concrete subclass. */
         const request: WbxmlElement | undefined =
             req.rawBody && req.rawBody.length > 0 ? new WbxmlDecoder().decode(req.rawBody) : undefined;
 
@@ -187,7 +178,6 @@ export abstract class BaseEasRoute<D extends DeviceSyncState, M extends Mailbox 
             .setHeader("Content-Length", buffer.length)
             .status(200)
             .send(buffer);
-        /* v8 ignore stop */
     }
 
     private async findOrCreateDeviceSyncState(mailboxUid: string, deviceId: string, deviceType: string): Promise<D> {
