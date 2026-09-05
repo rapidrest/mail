@@ -22,10 +22,10 @@ import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
 import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
 import { DeviceSyncStateSQL } from "../../../src/models/sql/DeviceSyncStateSQL.js";
-import { registerTestDoubles } from "../../testDoubles.js";
+import { registerTestDoubles, RecordingMailTransport } from "../../testDoubles.js";
 import { WbxmlEncoder } from "../../../src/eas/codec/WbxmlEncoder.js";
 import { WbxmlDecoder } from "../../../src/eas/codec/WbxmlDecoder.js";
-import { element, textElement, findChild, childText, type WbxmlElement } from "../../../src/eas/codec/WbxmlElement.js";
+import { element, textElement, opaqueElement, findChild, childText, type WbxmlElement } from "../../../src/eas/codec/WbxmlElement.js";
 import { WbxmlCodePage } from "../../../src/eas/codec/WbxmlCodePages.js";
 import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
 
@@ -42,6 +42,7 @@ describe("Route:EasRouteSQL Tests", () => {
 
     const owner: any = { uid: uuid.v4(), roles: [], elevated: Date.now() };
     const ownerToken = JWTUtils.createTokenSync(config.get("auth"), owner);
+    const otherUser: any = { uid: uuid.v4(), roles: [], elevated: Date.now() };
 
     /** See the identical helper in test/routes/mongo/EasRoute.test.ts for why the ACL seed matters here. */
     const createMailbox = async function (ownerUid: string): Promise<MailboxSQL> {
@@ -178,6 +179,11 @@ describe("Route:EasRouteSQL Tests", () => {
         await folderRepo.clear();
         await mailboxRepo.clear();
         await aclRepo.clear();
+        // See the identical reset in test/routes/mongo/EasRoute.test.ts.
+        const transport = objectFactory.getInstance<RecordingMailTransport>("MailTransport");
+        if (transport) {
+            transport.sent = [];
+        }
     });
 
     describe("OPTIONS", () => {
@@ -774,6 +780,341 @@ describe("Route:EasRouteSQL Tests", () => {
             expect(childText(appData, "From")).toBe("sender@example.com");
             expect(findChild(appData, "To")).toBeUndefined();
             expect(childText(appData, "Cc")).toBe("cc1@example.com");
+        });
+    });
+
+    describe("SendMail/SmartForward/SmartReply commands", () => {
+        const rawMime = function (
+            overrides: { from?: string; to?: string; cc?: string; bcc?: string; subject?: string; body?: string } = {},
+        ): Buffer {
+            const lines = [
+                `From: ${overrides.from ?? "owner@example.com"}`,
+                `To: ${overrides.to ?? "recipient@example.com"}`,
+                ...(overrides.cc ? [`Cc: ${overrides.cc}`] : []),
+                ...(overrides.bcc ? [`Bcc: ${overrides.bcc}`] : []),
+                `Subject: ${overrides.subject ?? "Test Compose"}`,
+                "MIME-Version: 1.0",
+                "Content-Type: text/plain; charset=utf-8",
+                "",
+                overrides.body ?? "Hello from EAS.",
+                "",
+            ];
+            return Buffer.from(lines.join("\r\n"));
+        };
+
+        const composeRequest = function (
+            cmd: "SendMail" | "SmartForward" | "SmartReply",
+            mime: Buffer,
+            opts: { saveInSentItems?: boolean; source?: { folderUid: string; itemId: string } } = {},
+        ): WbxmlElement {
+            return element(WbxmlCodePage.ComposeMail, cmd, [
+                textElement(WbxmlCodePage.ComposeMail, "ClientId", uuid.v4()),
+                ...(opts.saveInSentItems ? [element(WbxmlCodePage.ComposeMail, "SaveInSentItems", [])] : []),
+                ...(opts.source
+                    ? [
+                          element(WbxmlCodePage.ComposeMail, "Source", [
+                              textElement(WbxmlCodePage.ComposeMail, "FolderId", opts.source.folderUid),
+                              textElement(WbxmlCodePage.ComposeMail, "ItemId", opts.source.itemId),
+                          ]),
+                      ]
+                    : []),
+                opaqueElement(WbxmlCodePage.ComposeMail, "MIME", mime),
+            ]);
+        };
+
+        const transport = function (): RecordingMailTransport {
+            return objectFactory.getInstance<RecordingMailTransport>("MailTransport")!;
+        };
+
+        it("SendMail relays the composed message and returns an empty response.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", rawMime())));
+
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+            expect(result.body.length).toBe(0);
+            expect(transport().sent.length).toBe(1);
+            expect(transport().sent[0].envelopeTo).toEqual(["recipient@example.com"]);
+        });
+
+        it("SendMail with SaveInSentItems creates a Message in the mailbox's Sent Items folder.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const mime = rawMime({ subject: "Saved Copy", cc: "cc@example.com", bcc: "bcc@example.com" });
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", mime, { saveInSentItems: true })));
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+
+            const sentFolder = await folderRepo.findOne({ where: { type: FolderType.SENT_ITEMS } });
+            expect(sentFolder).not.toBeNull();
+            const saved = await messageRepo.findOne({ where: { folderUid: sentFolder!.uid, subject: "Saved Copy" } });
+            expect(saved).not.toBeNull();
+            expect(saved?.from.address).toBe("owner@example.com");
+            expect(saved?.recipients).toEqual([
+                { address: "recipient@example.com", type: RecipientType.TO },
+                { address: "cc@example.com", type: RecipientType.CC },
+                { address: "bcc@example.com", type: RecipientType.BCC },
+            ]);
+            expect(saved?.flags.read).toBe(true);
+        });
+
+        it("SendMail without SaveInSentItems relays but does not save a copy.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", rawMime())));
+
+            expect(transport().sent.length).toBe(1);
+            const anyMessage = await messageRepo.findOne({ where: {} });
+            expect(anyMessage).toBeNull();
+        });
+
+        it("Rejects a compose request with no MIME body.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ComposeMail, "SendMail", [
+                            textElement(WbxmlCodePage.ComposeMail, "ClientId", uuid.v4()),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 422 when the composed message fails spam scanning.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", rawMime({ body: "X-Test-Force-Spam: true" }))));
+
+            expect(result.status).toBe(422);
+            expect(transport().sent.length).toBe(0);
+        });
+
+        it("Returns 502 when the mail transport rejects the message.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", rawMime({ to: "reject@example.com" }))));
+
+            expect(result.status).toBe(502);
+        });
+
+        it("SmartReply threads the reply to the original and marks it Answered.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const inbox = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const original = await createMessage(mailbox.uid, inbox.uid, {
+                messageId: "<original@example.com>",
+                references: ["<earlier@example.com>"],
+            });
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SmartReply&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        composeRequest("SmartReply", rawMime({ subject: "Re: Test Compose" }), {
+                            saveInSentItems: true,
+                            source: { folderUid: inbox.uid, itemId: original.uid },
+                        }),
+                    ),
+                );
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+
+            const updatedOriginal = await messageRepo.findOne({ where: { uid: original.uid } });
+            expect(updatedOriginal?.flags.answered).toBe(true);
+            expect(updatedOriginal?.flags.forwarded).toBe(false);
+
+            const reply = await messageRepo.findOne({ where: { subject: "Re: Test Compose" } });
+            expect(reply?.inReplyTo).toBe("<original@example.com>");
+            expect(reply?.references).toEqual(["<earlier@example.com>", "<original@example.com>"]);
+        });
+
+        it("SmartForward marks the original message Forwarded.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const inbox = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const original = await createMessage(mailbox.uid, inbox.uid, { messageId: "<original2@example.com>" });
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SmartForward&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        composeRequest("SmartForward", rawMime({ subject: "Fwd: Test Compose" }), {
+                            source: { folderUid: inbox.uid, itemId: original.uid },
+                        }),
+                    ),
+                );
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+
+            const updatedOriginal = await messageRepo.findOne({ where: { uid: original.uid } });
+            expect(updatedOriginal?.flags.forwarded).toBe(true);
+            expect(updatedOriginal?.flags.answered).toBe(false);
+        });
+
+        it("Returns 404 when Source.ItemId references a message that doesn't exist.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SmartReply&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        composeRequest("SmartReply", rawMime(), {
+                            source: { folderUid: "nonexistent-folder", itemId: uuid.v4() },
+                        }),
+                    ),
+                );
+
+            expect(result.status).toBe(404);
+        });
+
+        it("Returns 403 when Source.ItemId references a message the caller has no permission on.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const otherMailbox = await createMailbox(otherUser.uid);
+            const otherInbox = await createFolderWithAcl(otherMailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const otherMessage = await createMessage(otherMailbox.uid, otherInbox.uid);
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SmartReply&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        composeRequest("SmartReply", rawMime(), {
+                            source: { folderUid: otherInbox.uid, itemId: otherMessage.uid },
+                        }),
+                    ),
+                );
+
+            expect(result.status).toBe(403);
+        });
+
+        it("Returns 400 when Source is present but missing its required ItemId.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SmartReply&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        element(WbxmlCodePage.ComposeMail, "SmartReply", [
+                            element(WbxmlCodePage.ComposeMail, "Source", [
+                                textElement(WbxmlCodePage.ComposeMail, "FolderId", "some-folder"),
+                            ]),
+                            opaqueElement(WbxmlCodePage.ComposeMail, "MIME", rawMime()),
+                        ]),
+                    ),
+                );
+
+            expect(result.status).toBe(400);
+        });
+
+        it("Returns 400 when the composed Mime has no resolvable From/To address.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const noAddressMime = Buffer.from(["Subject: No addresses", "MIME-Version: 1.0", "Content-Type: text/plain", "", "Body only."].join("\r\n"));
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", noAddressMime)));
+
+            expect(result.status).toBe(400);
+        });
+
+        it("SendMail with SaveInSentItems flattens a grouped (mailing-list-style) To header.", async () => {
+            await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const groupedMime = Buffer.from(
+                [
+                    "From: owner@example.com",
+                    "To: Team:alice@example.com,bob@example.com;",
+                    "Subject: Grouped Recipients",
+                    "MIME-Version: 1.0",
+                    "Content-Type: text/plain; charset=utf-8",
+                    "",
+                    "Hello team.",
+                    "",
+                ].join("\r\n"),
+            );
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(new WbxmlEncoder().encode(composeRequest("SendMail", groupedMime, { saveInSentItems: true })));
+
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+            expect(transport().sent[0].envelopeTo.sort()).toEqual(["alice@example.com", "bob@example.com"]);
+            const saved = await messageRepo.findOne({ where: { subject: "Grouped Recipients" } });
+            expect(saved?.recipients.map((r) => r.address).sort()).toEqual(["alice@example.com", "bob@example.com"]);
+        });
+
+        it("SendMail with a Source (non-standard, but not rejected) relays without touching any original message.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const inbox = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
+            const original = await createMessage(mailbox.uid, inbox.uid);
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}?Cmd=SendMail&DeviceId=dev1`)
+                .set("Authorization", "jwt " + ownerToken)
+                .set("Content-Type", "application/vnd.ms-sync.wbxml")
+                .send(
+                    new WbxmlEncoder().encode(
+                        composeRequest("SendMail", rawMime(), { source: { folderUid: inbox.uid, itemId: original.uid } }),
+                    ),
+                );
+
+            expect(result.status).toBeGreaterThanOrEqual(200);
+            expect(result.status).toBeLessThan(300);
+            const unchanged = await messageRepo.findOne({ where: { uid: original.uid } });
+            expect(unchanged?.flags.answered).toBe(false);
+            expect(unchanged?.flags.forwarded).toBe(false);
         });
     });
 });

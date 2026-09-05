@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import * as crypto from "crypto";
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import {
     ACLAction,
@@ -13,8 +12,9 @@ import {
     RouteDecorators,
 } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
-import { resolveDeliveryVerdict, ScanPipeline } from "../scan/ScanPipeline.js";
+import { ScanPipeline } from "../scan/ScanPipeline.js";
 import { findOrCreateWellKnownFolder } from "../util/FolderUtils.js";
+import { scanAndRelay } from "../util/MailSendUtils.js";
 import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
 import { FolderType, Message, MessageFlags } from "../models/types.js";
@@ -86,24 +86,14 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
         const raw: Buffer = await this.blobStore.get(message.bodyBlobKey);
         const envelopeTo: string[] = message.recipients.map((r) => r.address);
 
-        const scanResult = await this.scanPipeline.run(raw, { from: message.from.address, to: envelopeTo });
-        const verdict = resolveDeliveryVerdict(scanResult);
-        if (verdict !== "deliver") {
-            throw new ApiError(
-                ApiErrors.INVALID_REQUEST,
-                422,
-                "This message could not be sent because it failed spam/malware scanning.",
-            );
-        }
-
-        const transportResult = await this.mailTransport.send({
+        const { sanitizedHtmlBlobKey: scannedHtmlBlobKey } = await scanAndRelay(
             raw,
-            envelopeFrom: message.from.address,
+            message.from.address,
             envelopeTo,
-        });
-        if (transportResult.accepted.length === 0) {
-            throw new ApiError(ApiErrors.INTERNAL_ERROR, 502, "The mail transport rejected this message.");
-        }
+            this.scanPipeline,
+            this.mailTransport,
+            this.blobStore,
+        );
 
         const folderRepo: RecoverableRepoUtils<any> = await this.getFolderRepo();
         const sentFolder: any = await findOrCreateWellKnownFolder(
@@ -114,17 +104,10 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
             user,
         );
         const flags: MessageFlags = { ...message.flags, read: true };
-
-        // See `ScanQueueJob.processEntry()`'s equivalent comment: `scanResult.sanitizedHtml` must be persisted
-        // under its own blob key (never inline into `bodyBlobKey`, which stays the untouched composed source)
-        // or the sanitization pass computed above is silently discarded with no consumer ever able to read it.
-        let sanitizedHtmlBlobKey: string | undefined = (message as any).sanitizedHtmlBlobKey;
-        if (scanResult.sanitizedHtml !== undefined) {
-            sanitizedHtmlBlobKey = `sanitized/${crypto.randomUUID()}`;
-            await this.blobStore.put(sanitizedHtmlBlobKey, Buffer.from(scanResult.sanitizedHtml, "utf-8"), {
-                contentType: "text/html",
-            });
-        }
+        // `scanAndRelay()` only stores a new blob when this send pass actually produced sanitized HTML - a
+        // message with no HTML body at all keeps whatever `sanitizedHtmlBlobKey` it already had (absent, for a
+        // freshly composed draft).
+        const sanitizedHtmlBlobKey: string | undefined = scannedHtmlBlobKey ?? (message as any).sanitizedHtmlBlobKey;
 
         return await this.repoUtils.update(
             {

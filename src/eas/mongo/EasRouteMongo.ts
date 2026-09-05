@@ -8,6 +8,9 @@ import { ProvisionCommand } from "../commands/ProvisionCommand.js";
 import { PingCommand } from "../commands/PingCommand.js";
 import { FolderSyncCommandMongo } from "../commands/mongo/FolderSyncCommandMongo.js";
 import { SyncCommandMongo } from "../commands/mongo/SyncCommandMongo.js";
+import { SendMailCommandMongo } from "../commands/mongo/SendMailCommandMongo.js";
+import { SmartForwardCommandMongo } from "../commands/mongo/SmartForwardCommandMongo.js";
+import { SmartReplyCommandMongo } from "../commands/mongo/SmartReplyCommandMongo.js";
 
 /**
  * Mongo-backed concrete `BaseEasRoute`. A deployment mounts this at the well-known EAS path via its own
@@ -19,5 +22,13 @@ import { SyncCommandMongo } from "../commands/mongo/SyncCommandMongo.js";
 export class EasRouteMongo extends BaseEasRoute<DeviceSyncStateMongo, MailboxMongo> {
     protected deviceSyncStateClass: any = DeviceSyncStateMongo;
     protected mailboxClass: any = MailboxMongo;
-    protected commandHandlerClasses: any[] = [ProvisionCommand, FolderSyncCommandMongo, SyncCommandMongo, PingCommand];
+    protected commandHandlerClasses: any[] = [
+        ProvisionCommand,
+        FolderSyncCommandMongo,
+        SyncCommandMongo,
+        SendMailCommandMongo,
+        SmartForwardCommandMongo,
+        SmartReplyCommandMongo,
+        PingCommand,
+    ];
 }

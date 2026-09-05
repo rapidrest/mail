@@ -8,6 +8,9 @@ import { ProvisionCommand } from "../commands/ProvisionCommand.js";
 import { PingCommand } from "../commands/PingCommand.js";
 import { FolderSyncCommandSQL } from "../commands/sql/FolderSyncCommandSQL.js";
 import { SyncCommandSQL } from "../commands/sql/SyncCommandSQL.js";
+import { SendMailCommandSQL } from "../commands/sql/SendMailCommandSQL.js";
+import { SmartForwardCommandSQL } from "../commands/sql/SmartForwardCommandSQL.js";
+import { SmartReplyCommandSQL } from "../commands/sql/SmartReplyCommandSQL.js";
 
 /**
  * SQL-backed concrete `BaseEasRoute`. See `EasRouteMongo.ts`'s doc comment - the same mounting pattern
@@ -18,5 +21,13 @@ import { SyncCommandSQL } from "../commands/sql/SyncCommandSQL.js";
 export class EasRouteSQL extends BaseEasRoute<DeviceSyncStateSQL, MailboxSQL> {
     protected deviceSyncStateClass: any = DeviceSyncStateSQL;
     protected mailboxClass: any = MailboxSQL;
-    protected commandHandlerClasses: any[] = [ProvisionCommand, FolderSyncCommandSQL, SyncCommandSQL, PingCommand];
+    protected commandHandlerClasses: any[] = [
+        ProvisionCommand,
+        FolderSyncCommandSQL,
+        SyncCommandSQL,
+        SendMailCommandSQL,
+        SmartForwardCommandSQL,
+        SmartReplyCommandSQL,
+        PingCommand,
+    ];
 }
