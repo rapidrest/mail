@@ -117,6 +117,10 @@
             "import": "./dist/lib/eas.js",
             "types": "./dist/types/eas.d.ts"
         },
+        "./autodiscover": {
+            "import": "./dist/lib/autodiscover.js",
+            "types": "./dist/types/autodiscover.d.ts"
+        },
         "./search": {
             "import": "./dist/lib/search/index.js",
             "types": "./dist/types/search/index.d.ts"

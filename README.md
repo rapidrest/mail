@@ -16,8 +16,8 @@ webmail) ever speaks SMTP/IMAP/POP to this library directly.
 ## Status
 
 This library is under active development. Phase 1 (the core data model, the standard RapidREST CRUD API, mail
-ingestion/scanning/search) and Phase 2 (Exchange ActiveSync) are complete. MAPI over HTTP (Phase 3) has not
-been implemented yet.
+ingestion/scanning/search), Phase 2 (Exchange ActiveSync), and Autodiscover are complete. MAPI over HTTP
+(Phase 3) has not been implemented yet.
 
 Exchange ActiveSync support (`@rapidrest/mail/eas`) covers the pragmatic command subset a real mobile client
 (iOS Mail, Outlook mobile, Android/Samsung Mail) needs for day-to-day use: `Provision`, `FolderSync`, `Sync`
@@ -26,6 +26,16 @@ Exchange ActiveSync support (`@rapidrest/mail/eas`) covers the pragmatic command
 routes already use — no separate EAS-specific login flow — which means a real native device (rather than a
 test client that already has a token) needs an OAuth 2.0 Authorization Server role in front of it to obtain
 one; that piece is tracked as a follow-up in `@rapidrest/auth`, not this library.
+
+Autodiscover support (`@rapidrest/mail/autodiscover`) lets a real client find this deployment's EAS server URL
+from just an email address — classic POX (`POST /autodiscover/autodiscover.xml`) and the modern JSON variant
+Microsoft calls "Autodiscover v2" (`GET /autodiscover/autodiscover.json/v1.0/<email>?Protocol=ActiveSync`).
+Both endpoints are intentionally unauthenticated, matching Autodiscover v2's own spec design: they reveal
+nothing but a deployment-wide EAS URL (not a secret) once the requested address is confirmed to belong to a
+real mailbox here — real mailbox access is still fully gated by the JWT-protected EAS/REST layer, unchanged
+from above. For a real device to find these endpoints at all, the deployment's DNS needs a `CNAME` record for
+`autodiscover.<your-domain>` (and, optionally, a `_autodiscover._tcp` `SRV` record) pointing at wherever this
+server is mounted — an ops/deployment task, not something this library configures.
 
 ## Usage
 
@@ -51,4 +61,18 @@ const { Route } = RouteDecorators;
 
 @Route("/Microsoft-Server-ActiveSync")
 export class MyEasRoute extends EasRouteMongo {}
+```
+
+To also serve Autodiscover, mount `AutodiscoverRouteMongo`/`AutodiscoverRouteSQL` with a one-line subclass
+supplying the EAS URL from above:
+
+```ts
+import { AutodiscoverRouteMongo } from "@rapidrest/mail/mongo";
+import { RouteDecorators } from "@rapidrest/service-core";
+const { Route } = RouteDecorators;
+
+@Route("/autodiscover")
+export class MyAutodiscoverRoute extends AutodiscoverRouteMongo {
+    protected readonly easUrl = "https://mail.example.com/Microsoft-Server-ActiveSync";
+}
 ```
