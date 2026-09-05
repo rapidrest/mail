@@ -147,7 +147,7 @@ describe("EasDeviceStateCleanupJobMongo Tests (real DB + DI)", () => {
         await job.run();
 
         const remaining = await deviceSyncStateRepo
-            .find({ uid: { $in: devices.map((d) => d.uid) } } as any)
+            .find({ uid: { $in: devices.map((d) => d.uid) } })
             .toArray();
         expect(remaining.length).toBe(1);
     });

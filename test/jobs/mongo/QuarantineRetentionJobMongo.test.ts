@@ -153,7 +153,7 @@ describe("QuarantineRetentionJobMongo Tests (real DB + DI)", () => {
 
         await job.run();
 
-        const remaining = await quarantineEntryRepo.find({ uid: { $in: entries.map((e) => e.uid) } } as any).toArray();
+        const remaining = await quarantineEntryRepo.find({ uid: { $in: entries.map((e) => e.uid) } }).toArray();
         expect(remaining.length).toBe(1);
     });
 

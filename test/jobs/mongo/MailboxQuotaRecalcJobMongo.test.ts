@@ -239,7 +239,7 @@ describe("MailboxQuotaRecalcJobMongo Tests (real DB + DI)", () => {
 
         await job.run();
 
-        const updatedMailboxes = await mailboxRepo.find({ uid: { $in: mailboxes.map((m) => m.uid) } } as any).toArray();
+        const updatedMailboxes = await mailboxRepo.find({ uid: { $in: mailboxes.map((m) => m.uid) } }).toArray();
         const processedCount = updatedMailboxes.filter((m) => m.usedBytes === 42).length;
         expect(processedCount).toBe(2);
     });

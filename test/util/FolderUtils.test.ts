@@ -30,7 +30,7 @@ describe("findOrCreateWellKnownFolder() Tests", () => {
         const existingFolder = { uid: "existing-uid", type: FolderType.INBOX };
         const repo = makeRepo({ find: vi.fn().mockResolvedValue([existingFolder]) });
 
-        const result = await findOrCreateWellKnownFolder(repo as any, FakeFolder, "mbx-1", FolderType.INBOX);
+        const result = await findOrCreateWellKnownFolder(repo, FakeFolder, "mbx-1", FolderType.INBOX);
 
         expect(result).toBe(existingFolder);
         expect(repo.create).not.toHaveBeenCalled();
@@ -43,7 +43,7 @@ describe("findOrCreateWellKnownFolder() Tests", () => {
     it("Creates a new folder with the correct default name/type/mailboxUid when none exists.", async () => {
         const repo = makeRepo();
 
-        const result: any = await findOrCreateWellKnownFolder(repo as any, FakeFolder, "mbx-1", FolderType.JUNK);
+        const result: any = await findOrCreateWellKnownFolder(repo, FakeFolder, "mbx-1", FolderType.JUNK);
 
         expect(repo.create).toHaveBeenCalledTimes(1);
         const [createdInstance] = repo.create.mock.calls[0];
@@ -62,7 +62,7 @@ describe("findOrCreateWellKnownFolder() Tests", () => {
     it("Seeds the ACL with {uid, parentUid: mailboxUid, records: []} when creating.", async () => {
         const repo = makeRepo();
 
-        await findOrCreateWellKnownFolder(repo as any, FakeFolder, "mbx-42", FolderType.SENT_ITEMS);
+        await findOrCreateWellKnownFolder(repo, FakeFolder, "mbx-42", FolderType.SENT_ITEMS);
 
         const [createdInstance, options] = repo.create.mock.calls[0];
         expect(options).toEqual(
@@ -77,7 +77,7 @@ describe("findOrCreateWellKnownFolder() Tests", () => {
         const repo = makeRepo();
         const user: any = { uid: "user-1", roles: [] };
 
-        await findOrCreateWellKnownFolder(repo as any, FakeFolder, "mbx-1", FolderType.CALENDAR, user);
+        await findOrCreateWellKnownFolder(repo, FakeFolder, "mbx-1", FolderType.CALENDAR, user);
 
         const [, options] = repo.create.mock.calls[0];
         expect(options.user).toBe(user);
@@ -86,7 +86,7 @@ describe("findOrCreateWellKnownFolder() Tests", () => {
     it("Uses each well-known type's own conventional default name.", async () => {
         const repo = makeRepo();
 
-        await findOrCreateWellKnownFolder(repo as any, FakeFolder, "mbx-1", FolderType.CONTACTS);
+        await findOrCreateWellKnownFolder(repo, FakeFolder, "mbx-1", FolderType.CONTACTS);
 
         const [createdInstance] = repo.create.mock.calls[0];
         expect(createdInstance.data.name).toBe("Contacts");

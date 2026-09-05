@@ -144,7 +144,7 @@ describe("ExternalShareExpirationJobMongo Tests (real DB + DI)", () => {
 
         await job.run();
 
-        const remaining = await calendarShareLinkRepo.find({ uid: { $in: links.map((l) => l.uid) } } as any).toArray();
+        const remaining = await calendarShareLinkRepo.find({ uid: { $in: links.map((l) => l.uid) } }).toArray();
         expect(remaining.length).toBe(1);
     });
 

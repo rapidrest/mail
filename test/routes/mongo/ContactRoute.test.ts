@@ -283,7 +283,7 @@ describe("Route:ContactMongo Tests", () => {
 
         expect(result.status).toBe(403);
 
-        const count = await contactRepo.count({} as any);
+        const count = await contactRepo.count({});
         expect(count).toBe(0);
     });
 
@@ -497,7 +497,7 @@ describe("Route:ContactMongo Tests", () => {
         expect(result.status).toBeGreaterThanOrEqual(200);
         expect(result.status).toBeLessThan(300);
 
-        const count = await contactRepo.count({ folderUid: folder.uid } as any);
+        const count = await contactRepo.count({ folderUid: folder.uid });
         expect(count).toBe(0);
     });
 
@@ -512,7 +512,7 @@ describe("Route:ContactMongo Tests", () => {
 
         expect(result.status).toBe(403);
 
-        const count = await contactRepo.count({ folderUid: folder.uid } as any);
+        const count = await contactRepo.count({ folderUid: folder.uid });
         expect(count).toBe(1);
     });
 

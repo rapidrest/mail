@@ -46,7 +46,7 @@ describe("ExtractorRegistry Tests", () => {
         (registry as any).timeoutMs = 10;
         const hangingExtractor: TextExtractor = {
             mimeTypes: ["text/plain"],
-            extract: () => new Promise<string>(() => {}), // never resolves
+            extract: () => new Promise<string>(() => undefined), // never resolves
         };
         (registry as any).byMimeType.set("text/plain", hangingExtractor);
 

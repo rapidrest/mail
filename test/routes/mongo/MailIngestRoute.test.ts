@@ -146,7 +146,7 @@ describe("Route:MailIngestRouteMongo Tests", () => {
         expect(result.status).toBe(202);
         expect(result.body.results).toEqual([{ rcpt: mailbox.primarySmtpAddress, queued: true }]);
 
-        const entries: IngestQueueEntryMongo[] = await ingestQueueRepo.find({ mailboxUid: mailbox.uid } as any).toArray();
+        const entries: IngestQueueEntryMongo[] = await ingestQueueRepo.find({ mailboxUid: mailbox.uid }).toArray();
         expect(entries.length).toBe(1);
         expect(entries[0].status).toBe(IngestStatus.PENDING);
         expect(entries[0].envelopeFrom).toBe("sender@example.com");

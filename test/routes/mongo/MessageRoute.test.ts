@@ -298,7 +298,7 @@ describe("Route:MessageMongo Tests", () => {
 
         // Only ever one Sent Items folder was created for this mailbox - proof the second send() reused the
         // cached folderRepo/lookup rather than re-deriving (or re-creating) it from scratch.
-        const sentFolders = await folderRepo.find({ mailboxUid: mailbox.uid, type: FolderType.SENT_ITEMS } as any).toArray();
+        const sentFolders = await folderRepo.find({ mailboxUid: mailbox.uid, type: FolderType.SENT_ITEMS }).toArray();
         expect(sentFolders.length).toBe(1);
     });
 

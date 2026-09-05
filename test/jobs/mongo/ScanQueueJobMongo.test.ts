@@ -195,12 +195,12 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         expect(inbox!.unreadCount).toBe(1);
         expect(inbox!.totalCount).toBe(1);
 
-        const messages = await messageRepo.find({ folderUid: inbox!.uid } as any).toArray();
+        const messages = await messageRepo.find({ folderUid: inbox!.uid }).toArray();
         expect(messages.length).toBe(1);
         expect(messages[0].hasAttachments).toBe(true);
         expect(messages[0].scanResultUid).toBeTruthy();
 
-        const attachments = await attachmentRepo.find({ messageUid: messages[0].uid } as any).toArray();
+        const attachments = await attachmentRepo.find({ messageUid: messages[0].uid }).toArray();
         expect(attachments.length).toBe(1);
         expect(attachments[0].filename).toBe("file.txt");
         expect(attachments[0].folderUid).toBe(inbox!.uid);
@@ -208,7 +208,7 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         const storedAttachment: Buffer = await blobStore.get(attachments[0].blobKey);
         expect(storedAttachment.toString()).toBe("fake attachment content");
 
-        const scanResults = await scanResultRepo.find({ targetUid: messages[0].uid } as any).toArray();
+        const scanResults = await scanResultRepo.find({ targetUid: messages[0].uid }).toArray();
         expect(scanResults.length).toBe(1);
     });
 
@@ -243,8 +243,8 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         await job.run();
 
         const inbox = await folderRepo.findOne({ mailboxUid, type: FolderType.INBOX } as any);
-        const messages = await messageRepo.find({ folderUid: inbox!.uid } as any).toArray();
-        const attachments = await attachmentRepo.find({ messageUid: messages[0].uid } as any).toArray();
+        const messages = await messageRepo.find({ folderUid: inbox!.uid }).toArray();
+        const attachments = await attachmentRepo.find({ messageUid: messages[0].uid }).toArray();
         expect(attachments.length).toBe(1);
         expect(attachments[0].filename).toBe("attachment");
     });
@@ -262,7 +262,7 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         await job.run();
 
         const inbox = await folderRepo.findOne({ mailboxUid, type: FolderType.INBOX } as any);
-        const messages = await messageRepo.find({ folderUid: inbox!.uid } as any).toArray();
+        const messages = await messageRepo.find({ folderUid: inbox!.uid }).toArray();
         expect(messages.length).toBe(1);
         expect(messages[0].sanitizedHtmlBlobKey).toBeTruthy();
         expect(messages[0].sanitizedHtmlBlobKey).not.toBe(messages[0].bodyBlobKey);
@@ -283,9 +283,9 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
 
         await job.run();
 
-        const junkFolders = await folderRepo.find({ mailboxUid, type: FolderType.JUNK } as any).toArray();
+        const junkFolders = await folderRepo.find({ mailboxUid, type: FolderType.JUNK }).toArray();
         expect(junkFolders.length).toBe(1);
-        const messages = await messageRepo.find({ folderUid: junkFolders[0].uid } as any).toArray();
+        const messages = await messageRepo.find({ folderUid: junkFolders[0].uid }).toArray();
         expect(messages.length).toBe(1);
 
         // A second spam message must reuse the same Junk folder rather than creating another one.
@@ -294,7 +294,7 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         await createIngestEntry({ rawBlobKey: rawBlobKey2 });
         await job.run();
 
-        const junkFoldersAfter = await folderRepo.find({ mailboxUid, type: FolderType.JUNK } as any).toArray();
+        const junkFoldersAfter = await folderRepo.find({ mailboxUid, type: FolderType.JUNK }).toArray();
         expect(junkFoldersAfter.length).toBe(1);
         expect(junkFoldersAfter[0].totalCount).toBe(2);
     });
@@ -310,10 +310,10 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         const updated = await ingestQueueRepo.findOne({ uid: entry.uid } as any);
         expect(updated!.status).toBe(IngestStatus.DELIVERED);
 
-        const messages = await messageRepo.find({ mailboxUid } as any).toArray();
+        const messages = await messageRepo.find({ mailboxUid }).toArray();
         expect(messages.length).toBe(0);
 
-        const quarantineEntries = await quarantineEntryRepo.find({ mailboxUid } as any).toArray();
+        const quarantineEntries = await quarantineEntryRepo.find({ mailboxUid }).toArray();
         expect(quarantineEntries.length).toBe(1);
         expect(quarantineEntries[0].reason).toBe(QuarantineReason.INFECTED);
         expect(quarantineEntries[0].rawBlobKey).toBe(rawBlobKey);
@@ -330,10 +330,10 @@ describe("ScanQueueJobMongo Tests (real DB + DI)", () => {
         const updated = await ingestQueueRepo.findOne({ uid: entry.uid } as any);
         expect(updated!.status).toBe(IngestStatus.DELIVERED);
 
-        const messages = await messageRepo.find({ mailboxUid } as any).toArray();
+        const messages = await messageRepo.find({ mailboxUid }).toArray();
         expect(messages.length).toBe(0);
 
-        const quarantineEntries = await quarantineEntryRepo.find({ mailboxUid } as any).toArray();
+        const quarantineEntries = await quarantineEntryRepo.find({ mailboxUid }).toArray();
         expect(quarantineEntries.length).toBe(1);
         expect(quarantineEntries[0].reason).toBe(QuarantineReason.OTHER);
     });
