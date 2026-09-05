@@ -21,13 +21,26 @@ import { Repository } from "typeorm";
 import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
 import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
+import { ContactSQL } from "../../../src/models/sql/ContactSQL.js";
+import { CalendarEventSQL } from "../../../src/models/sql/CalendarEventSQL.js";
+import { TaskSQL } from "../../../src/models/sql/TaskSQL.js";
 import { DeviceSyncStateSQL } from "../../../src/models/sql/DeviceSyncStateSQL.js";
 import { registerTestDoubles, RecordingMailTransport } from "../../testDoubles.js";
 import { WbxmlEncoder } from "../../../src/eas/codec/WbxmlEncoder.js";
 import { WbxmlDecoder } from "../../../src/eas/codec/WbxmlDecoder.js";
 import { element, textElement, opaqueElement, findChild, childText, type WbxmlElement } from "../../../src/eas/codec/WbxmlElement.js";
 import { WbxmlCodePage } from "../../../src/eas/codec/WbxmlCodePages.js";
-import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
+import {
+    FolderType,
+    MessageImportance,
+    RecipientType,
+    ContactAddressKind,
+    AttendeeRole,
+    AttendeeResponseStatus,
+    BusyStatus,
+    RecurrenceFrequency,
+    TaskPriority,
+} from "../../../src/models/types.js";
 
 describe("Route:EasRouteSQL Tests", () => {
     const logger = Logger();
@@ -37,6 +50,9 @@ describe("Route:EasRouteSQL Tests", () => {
     let mailboxRepo: Repository<MailboxSQL>;
     let folderRepo: Repository<FolderSQL>;
     let messageRepo: Repository<MessageSQL>;
+    let contactRepo: Repository<ContactSQL>;
+    let calendarEventRepo: Repository<CalendarEventSQL>;
+    let taskRepo: Repository<TaskSQL>;
     let deviceSyncStateRepo: Repository<DeviceSyncStateSQL>;
     let aclRepo: Repository<AccessControlListSQL>;
 
@@ -106,6 +122,55 @@ describe("Route:EasRouteSQL Tests", () => {
     };
 
     /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
+    const createContact = async function (mailboxUid: string, folderUid: string, data?: Partial<ContactSQL>): Promise<ContactSQL> {
+        return await contactRepo.save(
+            new ContactSQL({
+                mailboxUid,
+                folderUid,
+                displayName: "Test Contact",
+                emails: [],
+                phones: [],
+                addresses: [],
+                ...data,
+            } as any),
+        );
+    };
+
+    /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
+    const createCalendarEvent = async function (
+        mailboxUid: string,
+        folderUid: string,
+        data?: Partial<CalendarEventSQL>,
+    ): Promise<CalendarEventSQL> {
+        return await calendarEventRepo.save(
+            new CalendarEventSQL({
+                mailboxUid,
+                folderUid,
+                title: "Test Event",
+                startDate: new Date("2026-01-01T10:00:00.000Z"),
+                endDate: new Date("2026-01-01T11:00:00.000Z"),
+                timezone: "UTC",
+                organizer: { address: "owner@example.com", type: RecipientType.TO },
+                attendees: [],
+                icalUid: `${uuid.v4()}@example.com`,
+                ...data,
+            } as any),
+        );
+    };
+
+    /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
+    const createTask = async function (mailboxUid: string, folderUid: string, data?: Partial<TaskSQL>): Promise<TaskSQL> {
+        return await taskRepo.save(
+            new TaskSQL({
+                mailboxUid,
+                folderUid,
+                title: "Test Task",
+                ...data,
+            } as any),
+        );
+    };
+
+    /** See the identical helper in test/routes/mongo/EasRoute.test.ts. */
     const postWbxml = async function (cmd: string, deviceId: string, requestBody?: WbxmlElement): Promise<WbxmlElement> {
         const req = request(server.getApplication())
             .post(`${baseUrl}?Cmd=${cmd}&DeviceId=${deviceId}`)
@@ -156,6 +221,9 @@ describe("Route:EasRouteSQL Tests", () => {
             mailboxRepo = conn.getRepository(MailboxSQL);
             folderRepo = conn.getRepository(FolderSQL);
             messageRepo = conn.getRepository(MessageSQL);
+            contactRepo = conn.getRepository(ContactSQL);
+            calendarEventRepo = conn.getRepository(CalendarEventSQL);
+            taskRepo = conn.getRepository(TaskSQL);
             deviceSyncStateRepo = conn.getRepository(DeviceSyncStateSQL);
         } else {
             throw new Error("Could not find sql connection");
@@ -175,6 +243,9 @@ describe("Route:EasRouteSQL Tests", () => {
 
     beforeEach(async () => {
         await deviceSyncStateRepo.clear();
+        await taskRepo.clear();
+        await calendarEventRepo.clear();
+        await contactRepo.clear();
         await messageRepo.clear();
         await folderRepo.clear();
         await mailboxRepo.clear();
@@ -607,7 +678,10 @@ describe("Route:EasRouteSQL Tests", () => {
             const mailbox = await createMailbox(owner.uid);
             await provisionDevice("dev1");
             const folder = await createFolderWithAcl(mailbox.uid, { name: "Inbox", type: FolderType.INBOX });
-            const message = await createMessage(mailbox.uid, folder.uid, { subject: "Hello EAS" });
+            const message = await createMessage(mailbox.uid, folder.uid, {
+                subject: "Hello EAS",
+                flags: { read: true, flagged: true, answered: false, forwarded: false },
+            });
 
             const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Email", folder.uid));
             const initialKey = childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!;
@@ -623,7 +697,8 @@ describe("Route:EasRouteSQL Tests", () => {
             const appData = findChild(add, "ApplicationData")!;
             expect(childText(appData, "Subject")).toBe("Hello EAS");
             expect(childText(appData, "From")).toBe("Sender <sender@example.com>");
-            expect(childText(appData, "Read")).toBe("0");
+            expect(childText(appData, "Read")).toBe("1");
+            expect(childText(appData, "Flag")).toBe("1");
         });
 
         it("Reports a message deleted via the REST API as a Delete on the next sync round.", async () => {
@@ -691,9 +766,9 @@ describe("Route:EasRouteSQL Tests", () => {
         it("Returns a per-collection Status 4 for an unsupported collection Class.", async () => {
             const mailbox = await createMailbox(owner.uid);
             await provisionDevice("dev1");
-            const folder = await createFolderWithAcl(mailbox.uid, { name: "Contacts", type: FolderType.CONTACTS });
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Notes", type: FolderType.NOTES });
 
-            const response = await postWbxml("Sync", "dev1", syncRequest("0", "Contacts", folder.uid));
+            const response = await postWbxml("Sync", "dev1", syncRequest("0", "Notes", folder.uid));
 
             const collection = findChild(findChild(response, "Collections")!, "Collection")!;
             expect(childText(collection, "Status")).toBe("4");
@@ -780,6 +855,275 @@ describe("Route:EasRouteSQL Tests", () => {
             expect(childText(appData, "From")).toBe("sender@example.com");
             expect(findChild(appData, "To")).toBeUndefined();
             expect(childText(appData, "Cc")).toBe("cc1@example.com");
+        });
+
+        const firstAddAppData = function (response: WbxmlElement): WbxmlElement {
+            const commands = findChild(findChild(findChild(response, "Collections")!, "Collection")!, "Commands")!;
+            return findChild(findChild(commands, "Add")!, "ApplicationData")!;
+        };
+
+        it("Reports an existing contact as an Add, mapping emails/phones/addresses/notes.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Contacts", type: FolderType.CONTACTS });
+            await createContact(mailbox.uid, folder.uid, {
+                displayName: "Ada Lovelace",
+                givenName: "Ada",
+                surname: "Lovelace",
+                company: "Analytical Engines Ltd",
+                jobTitle: "Mathematician",
+                emails: [{ address: "ada@example.com", type: ContactAddressKind.WORK }],
+                phones: [{ phoneNumber: "555-1234", type: ContactAddressKind.HOME }],
+                addresses: [{ street: "1 Babbage Way", city: "London", type: ContactAddressKind.WORK }],
+                notes: "Met at the Analytical Engine demo.",
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Contacts", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Contacts", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "FileAs")).toBe("Ada Lovelace");
+            expect(childText(appData, "FirstName")).toBe("Ada");
+            expect(childText(appData, "LastName")).toBe("Lovelace");
+            expect(childText(appData, "CompanyName")).toBe("Analytical Engines Ltd");
+            expect(childText(appData, "JobTitle")).toBe("Mathematician");
+            expect(childText(appData, "Email1Address")).toBe("ada@example.com");
+            expect(childText(appData, "HomePhoneNumber")).toBe("555-1234");
+            expect(childText(appData, "BusinessStreet")).toBe("1 Babbage Way");
+            expect(childText(appData, "BusinessCity")).toBe("London");
+            const body = findChild(appData, "Body")!;
+            expect(childText(body, "Data")).toBe("Met at the Analytical Engine demo.");
+        });
+
+        it("Reports a minimal contact as an Add, omitting unset optional fields and dropping an OTHER-kind phone.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Contacts", type: FolderType.CONTACTS });
+            await createContact(mailbox.uid, folder.uid, {
+                displayName: "Bare Contact",
+                phones: [{ phoneNumber: "555-0000", type: ContactAddressKind.OTHER }],
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Contacts", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Contacts", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "FileAs")).toBe("Bare Contact");
+            expect(findChild(appData, "FirstName")).toBeUndefined();
+            expect(findChild(appData, "LastName")).toBeUndefined();
+            expect(findChild(appData, "CompanyName")).toBeUndefined();
+            expect(findChild(appData, "JobTitle")).toBeUndefined();
+            expect(findChild(appData, "Body")).toBeUndefined();
+            expect(findChild(appData, "HomePhoneNumber")).toBeUndefined();
+            expect(findChild(appData, "BusinessPhoneNumber")).toBeUndefined();
+        });
+
+        it("Reports a minimal calendar event as an Add, omitting attendees/reminder/recurrence.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            await createCalendarEvent(mailbox.uid, folder.uid, {
+                title: "Solo Focus Time",
+                organizer: { address: "owner@example.com", type: RecipientType.TO },
+                busyStatus: BusyStatus.FREE,
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Calendar", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Calendar", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "Subject")).toBe("Solo Focus Time");
+            expect(findChild(appData, "Location")).toBeUndefined();
+            expect(childText(appData, "BusyStatus")).toBe("0");
+            expect(childText(appData, "MeetingStatus")).toBe("0");
+            expect(findChild(appData, "OrganizerName")).toBeUndefined();
+            expect(findChild(appData, "Attendees")).toBeUndefined();
+            expect(findChild(appData, "Reminder")).toBeUndefined();
+            expect(findChild(appData, "Recurrence")).toBeUndefined();
+        });
+
+        it("Reports a yearly-recurring calendar event, deriving DayOfMonth/MonthOfYear from the start date.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            await createCalendarEvent(mailbox.uid, folder.uid, {
+                title: "Anniversary",
+                organizer: { address: "owner@example.com", type: RecipientType.TO },
+                startDate: new Date("2026-03-15T09:00:00.000Z"),
+                endDate: new Date("2026-03-15T10:00:00.000Z"),
+                recurrenceRule: { freq: RecurrenceFrequency.YEARLY, interval: 1, exceptions: [] },
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Calendar", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Calendar", folder.uid),
+            );
+
+            const recurrence = findChild(firstAddAppData(response), "Recurrence")!;
+            expect(childText(recurrence, "Type")).toBe("5");
+            expect(childText(recurrence, "DayOfMonth")).toBe("15");
+            expect(childText(recurrence, "MonthOfYear")).toBe("3");
+            expect(findChild(recurrence, "DayOfWeek")).toBeUndefined();
+            expect(findChild(recurrence, "Until")).toBeUndefined();
+            expect(findChild(recurrence, "Occurrences")).toBeUndefined();
+        });
+
+        it("Reports an all-day event with a bounded recurrence and a nameless attendee.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            await createCalendarEvent(mailbox.uid, folder.uid, {
+                title: "Company Holiday",
+                allDay: true,
+                organizer: { address: "owner@example.com", type: RecipientType.TO },
+                attendees: [
+                    {
+                        address: "attendee@example.com",
+                        role: AttendeeRole.OPTIONAL,
+                        responseStatus: AttendeeResponseStatus.DECLINED,
+                        isOrganizer: false,
+                    },
+                ],
+                recurrenceRule: {
+                    freq: RecurrenceFrequency.MONTHLY,
+                    interval: 1,
+                    byMonthDay: [1],
+                    until: new Date("2026-12-31T00:00:00.000Z"),
+                    count: 12,
+                    exceptions: [],
+                },
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Calendar", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Calendar", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "AllDayEvent")).toBe("1");
+            const attendee = findChild(findChild(appData, "Attendees")!, "Attendee")!;
+            expect(findChild(attendee, "Name")).toBeUndefined();
+            expect(childText(attendee, "AttendeeType")).toBe("2");
+            expect(childText(attendee, "AttendeeStatus")).toBe("4");
+            const recurrence = findChild(appData, "Recurrence")!;
+            expect(childText(recurrence, "Type")).toBe("2");
+            expect(childText(recurrence, "DayOfMonth")).toBe("1");
+            expect(childText(recurrence, "Until")).toBe("20261231T000000Z");
+            expect(childText(recurrence, "Occurrences")).toBe("12");
+        });
+
+        it("Reports an existing calendar event as an Add, mapping attendees and a weekly recurrence.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Calendar", type: FolderType.CALENDAR });
+            await createCalendarEvent(mailbox.uid, folder.uid, {
+                title: "Team Sync",
+                location: "Room 42",
+                organizer: { address: "owner@example.com", displayName: "Owner", type: RecipientType.TO },
+                attendees: [
+                    {
+                        address: "attendee@example.com",
+                        displayName: "Attendee",
+                        role: AttendeeRole.REQUIRED,
+                        responseStatus: AttendeeResponseStatus.ACCEPTED,
+                        isOrganizer: false,
+                    },
+                ],
+                busyStatus: BusyStatus.BUSY,
+                reminderMinutesBeforeStart: 15,
+                recurrenceRule: { freq: RecurrenceFrequency.WEEKLY, interval: 1, byDay: ["MO", "WE"], exceptions: [] },
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Calendar", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Calendar", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "Subject")).toBe("Team Sync");
+            expect(childText(appData, "Location")).toBe("Room 42");
+            expect(childText(appData, "BusyStatus")).toBe("2");
+            expect(childText(appData, "MeetingStatus")).toBe("1");
+            expect(childText(appData, "OrganizerEmail")).toBe("owner@example.com");
+            expect(childText(appData, "Reminder")).toBe("15");
+            const attendee = findChild(findChild(appData, "Attendees")!, "Attendee")!;
+            expect(childText(attendee, "Email")).toBe("attendee@example.com");
+            expect(childText(attendee, "AttendeeType")).toBe("1");
+            expect(childText(attendee, "AttendeeStatus")).toBe("3");
+            const recurrence = findChild(appData, "Recurrence")!;
+            expect(childText(recurrence, "Type")).toBe("1");
+            expect(childText(recurrence, "DayOfWeek")).toBe(String(2 | 8));
+        });
+
+        it("Reports an existing task as an Add, mapping due date, reminder, and body.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Tasks", type: FolderType.TASKS });
+            await createTask(mailbox.uid, folder.uid, {
+                title: "Finish the report",
+                body: "Quarterly numbers.",
+                dueDate: new Date("2026-02-01T00:00:00.000Z"),
+                reminderDate: new Date("2026-01-31T09:00:00.000Z"),
+                priority: TaskPriority.HIGH,
+                completed: false,
+            });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Tasks", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Tasks", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "Subject")).toBe("Finish the report");
+            expect(childText(appData, "Complete")).toBe("0");
+            expect(childText(appData, "Importance")).toBe("2");
+            expect(childText(appData, "UtcDueDate")).toBe("20260201T000000Z");
+            expect(childText(appData, "ReminderSet")).toBe("1");
+            expect(childText(appData, "ReminderTime")).toBe("20260131T090000Z");
+            const body = findChild(appData, "Body")!;
+            expect(childText(body, "Data")).toBe("Quarterly numbers.");
+        });
+
+        it("Reports a completed task with no due date/reminder/body as an Add.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await provisionDevice("dev1");
+            const folder = await createFolderWithAcl(mailbox.uid, { name: "Tasks", type: FolderType.TASKS });
+            await createTask(mailbox.uid, folder.uid, { title: "Already done", completed: true });
+
+            const initial = await postWbxml("Sync", "dev1", syncRequest("0", "Tasks", folder.uid));
+            const response = await postWbxml(
+                "Sync",
+                "dev1",
+                syncRequest(childText(findChild(findChild(initial, "Collections")!, "Collection")!, "SyncKey")!, "Tasks", folder.uid),
+            );
+
+            const appData = firstAddAppData(response);
+            expect(childText(appData, "Complete")).toBe("1");
+            expect(findChild(appData, "DateCompleted")).not.toBeUndefined();
+            expect(findChild(appData, "UtcDueDate")).toBeUndefined();
+            expect(childText(appData, "ReminderSet")).toBe("0");
+            expect(findChild(appData, "ReminderTime")).toBeUndefined();
+            expect(findChild(appData, "Body")).toBeUndefined();
         });
     });
 
