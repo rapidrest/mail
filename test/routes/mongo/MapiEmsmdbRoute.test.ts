@@ -15,11 +15,14 @@ import { MongoConnection, MongoRepository, Server, ObjectFactory, ConnectionMana
 import { JWTUtils, Logger } from "@rapidrest/core";
 import * as uuid from "uuid";
 import { MailboxMongo } from "../../../src/models/mongo/MailboxMongo.js";
+import { FolderMongo } from "../../../src/models/mongo/FolderMongo.js";
+import { FolderType } from "../../../src/models/types.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
 import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
+import { PropertyType, readPropertyValue, writePropertyTag } from "../../../src/mapi/codec/PropertyValue.js";
 import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
 const mongod: MongoMemoryServer = new MongoMemoryServer({
@@ -35,6 +38,7 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
     const server: Server = new Server({ config, basePath: "./test/server-mongo", logger, objectFactory });
     const baseUrl = "/mongo/mapi/emsmdb";
     let mailboxRepo: MongoRepository<MailboxMongo>;
+    let folderRepo: MongoRepository<FolderMongo>;
     let aclRepo: MongoRepository<any>;
 
     const owner: any = { uid: uuid.v4(), roles: [], elevated: Date.now() };
@@ -61,6 +65,12 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
             parentUid: "Mailbox",
         });
         return result;
+    };
+
+    const createFolder = async function (mailboxUid: string, type: FolderType, name: string, parentFolderUid?: string): Promise<FolderMongo> {
+        return await folderRepo.save(
+            new FolderMongo({ mailboxUid, name, type, parentFolderUid, unreadCount: 0, totalCount: 0, syncKeyVersion: 0 }),
+        );
     };
 
     const connect = async function (headers: Record<string, string> = {}) {
@@ -107,6 +117,7 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
         const conn: any = connMgr?.connections.get("mongo");
         if (conn instanceof MongoConnection) {
             mailboxRepo = conn.getMongoRepository("MailboxMongo");
+            folderRepo = conn.getMongoRepository("FolderMongo");
         } else {
             throw new Error("Could not find mongo connection");
         }
@@ -125,7 +136,7 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
     });
 
     beforeEach(async () => {
-        for (const repo of [mailboxRepo, aclRepo]) {
+        for (const repo of [mailboxRepo, folderRepo, aclRepo]) {
             try {
                 await repo.clear();
             } catch (err: any) {
@@ -305,6 +316,154 @@ describe("Route:MapiEmsmdbRouteMongo Tests", () => {
             const { ropsList } = decodeRopBuffer(reader.readBytes(ropBufferSize));
             // RopRelease produces no response entry - the entire ropsList is empty.
             expect(ropsList.length).toBe(0);
+        });
+    });
+
+    describe("Folder hierarchy browsing (RopOpenFolder / RopGetHierarchyTable / RopSetColumns / RopQueryRows)", () => {
+        const buildLogonRops = function (outputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0xfe);
+            writer.writeUInt8(0);
+            writer.writeUInt8(outputHandleIndex);
+            writer.writeUInt8(0x01);
+            writer.writeUInt32LE(0);
+            writer.writeUInt32LE(0);
+            writer.writeUInt16LE(0);
+            return writer.toBuffer();
+        };
+
+        const buildOpenFolderRops = function (inputHandleIndex: number, outputHandleIndex: number, folderId: bigint): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x02);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(outputHandleIndex);
+            writer.writeUInt8(0); // OpenModeFlags
+            writer.writeBigUInt64LE(folderId);
+            return writer.toBuffer();
+        };
+
+        const buildGetHierarchyTableRops = function (inputHandleIndex: number, outputHandleIndex: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x04);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(outputHandleIndex);
+            writer.writeUInt8(0); // TableFlags - Standard
+            return writer.toBuffer();
+        };
+
+        const buildSetColumnsRops = function (inputHandleIndex: number, tags: { propertyId: number; propertyType: PropertyType }[]): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x12);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(0); // SetColumnsFlags
+            writer.writeUInt16LE(tags.length);
+            for (const tag of tags) {
+                writePropertyTag(writer, tag);
+            }
+            return writer.toBuffer();
+        };
+
+        const buildQueryRowsRops = function (inputHandleIndex: number, rowCount: number): Buffer {
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x15);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt8(0); // QueryRowsFlags
+            writer.writeUInt8(1); // ForwardRead
+            writer.writeUInt16LE(rowCount);
+            return writer.toBuffer();
+        };
+
+        it("Browses the top-level folder list end to end: Logon, OpenFolder(root), GetHierarchyTable, SetColumns, QueryRows.", async () => {
+            const mailbox = await createMailbox(owner.uid);
+            await createFolder(mailbox.uid, FolderType.INBOX, "Inbox");
+            await createFolder(mailbox.uid, FolderType.USER, "Archive");
+            const connectResult = await connect();
+            const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+            // Logon (handle 0) - discover the "root" FID.
+            const logonInput = encodeRopBuffer({ ropsList: buildLogonRops(0), handleTable: [0xffffffff] });
+            const logonResult = await execute(cookie, logonInput);
+            const logonReader = new BufferReader(logonResult.body);
+            logonReader.readUInt32LE();
+            logonReader.readUInt32LE();
+            logonReader.readUInt32LE();
+            const logonRopBufferSize = logonReader.readUInt32LE();
+            const { ropsList: logonRopsList } = decodeRopBuffer(logonReader.readBytes(logonRopBufferSize));
+            const logonRopsReader = new BufferReader(logonRopsList);
+            logonRopsReader.readUInt8(); // RopId
+            logonRopsReader.readUInt8(); // OutputHandleIndex
+            logonRopsReader.readUInt32LE(); // ReturnValue
+            logonRopsReader.readUInt8(); // LogonFlags
+            const rootFid = logonRopsReader.readBigUInt64LE(); // FolderIds[0] = Root
+
+            // OpenFolder(root) at handle 1, using logon handle 0 as input.
+            const openFolderInput = encodeRopBuffer({ ropsList: buildOpenFolderRops(0, 1, rootFid), handleTable: [0xffffffff, 0xffffffff] });
+            const openFolderResult = await execute(cookie, openFolderInput);
+            const openFolderReader = new BufferReader(openFolderResult.body);
+            openFolderReader.readUInt32LE();
+            openFolderReader.readUInt32LE();
+            openFolderReader.readUInt32LE();
+            const openFolderRopBufferSize = openFolderReader.readUInt32LE();
+            const { ropsList: openFolderRopsList } = decodeRopBuffer(openFolderReader.readBytes(openFolderRopBufferSize));
+            const openFolderRopsReader = new BufferReader(openFolderRopsList);
+            openFolderRopsReader.readUInt8();
+            openFolderRopsReader.readUInt8();
+            expect(openFolderRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+            // GetHierarchyTable at handle 2, using folder handle 1 as input.
+            const tableInput = encodeRopBuffer({ ropsList: buildGetHierarchyTableRops(1, 2), handleTable: [0xffffffff, 0xffffffff, 0xffffffff] });
+            const tableResult = await execute(cookie, tableInput);
+            const tableReader = new BufferReader(tableResult.body);
+            tableReader.readUInt32LE();
+            tableReader.readUInt32LE();
+            tableReader.readUInt32LE();
+            const tableRopBufferSize = tableReader.readUInt32LE();
+            const { ropsList: tableRopsList } = decodeRopBuffer(tableReader.readBytes(tableRopBufferSize));
+            const tableRopsReader = new BufferReader(tableRopsList);
+            tableRopsReader.readUInt8();
+            tableRopsReader.readUInt8();
+            expect(tableRopsReader.readUInt32LE()).toBe(0); // ReturnValue - success
+
+            // SetColumns on table handle 2: DisplayName + ContentCount + ContentUnreadCount.
+            const columns = [
+                { propertyId: 0x3001, propertyType: PropertyType.PtypString },
+                { propertyId: 0x3602, propertyType: PropertyType.PtypInteger32 },
+                { propertyId: 0x3603, propertyType: PropertyType.PtypInteger32 },
+            ];
+            const setColumnsInput = encodeRopBuffer({ ropsList: buildSetColumnsRops(2, columns), handleTable: [0xffffffff] });
+            const setColumnsResult = await execute(cookie, setColumnsInput);
+            expect(setColumnsResult.headers["x-responsecode"]).toBe("0");
+
+            // QueryRows on table handle 2.
+            const queryRowsInput = encodeRopBuffer({ ropsList: buildQueryRowsRops(2, 10), handleTable: [0xffffffff] });
+            const queryRowsResult = await execute(cookie, queryRowsInput);
+            const queryRowsReader = new BufferReader(queryRowsResult.body);
+            queryRowsReader.readUInt32LE();
+            queryRowsReader.readUInt32LE();
+            queryRowsReader.readUInt32LE();
+            const queryRowsBufferSize = queryRowsReader.readUInt32LE();
+            const { ropsList: queryRowsList } = decodeRopBuffer(queryRowsReader.readBytes(queryRowsBufferSize));
+            const rowsReader = new BufferReader(queryRowsList);
+            rowsReader.readUInt8(); // RopId
+            rowsReader.readUInt8(); // InputHandleIndex
+            expect(rowsReader.readUInt32LE()).toBe(0); // ReturnValue
+            rowsReader.readUInt8(); // Origin
+            const rowCount = rowsReader.readUInt16LE();
+            expect(rowCount).toBe(2);
+
+            const names: string[] = [];
+            for (let i = 0; i < rowCount; i++) {
+                rowsReader.readUInt8(); // PropertyRow Flags
+                names.push(readPropertyValue(rowsReader, PropertyType.PtypString) as string);
+                readPropertyValue(rowsReader, PropertyType.PtypInteger32); // ContentCount
+                readPropertyValue(rowsReader, PropertyType.PtypInteger32); // ContentUnreadCount
+            }
+            expect(names.sort()).toEqual(["Archive", "Inbox"]);
+            expect(rowsReader.hasMore()).toBe(false);
         });
     });
 

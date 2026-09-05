@@ -10,13 +10,19 @@ const { Init } = ObjectDecorators;
  * value - a real client re-establishes (`Connect`) transparently whenever its session context has expired. */
 const SESSION_TTL_SECONDS = 15 * 60;
 
-/** Tags what a ROP-assigned integer handle (the `ServerObjectHandleTable` index space) refers to. A table
- * handle's `cursor`/`columns` hold `RopSetColumns`/`RopQueryRows` state for that specific table instance. */
+/** Tags what a ROP-assigned integer handle (the `ServerObjectHandleTable` index space) refers to.
+ * `entityUid` for a `"folder"` handle is one of `session.folderIds`' own value strings (`"virtual:<name>"` or
+ * `"folder:<uid>"`), not a bare UID - the same format throughout avoids a second parallel encoding. A
+ * `"table"` handle's `rows`/`columns`/`cursor` hold `RopGetHierarchyTable`/`RopSetColumns`/`RopQueryRows`
+ * state for that specific table instance: `rows` is the resolved, order-fixed list of entity targets (same
+ * `"virtual:<name>"`/`"folder:<uid>"` format) this table enumerates, `columns` the `RopSetColumns`-configured
+ * property list, `cursor` how many rows `RopQueryRows` has already returned. */
 export interface MapiObjectHandle {
     type: "logon" | "folder" | "message" | "table";
     entityUid: string;
+    rows?: string[];
+    columns?: { propertyId: number; propertyType: number }[];
     cursor?: number;
-    columns?: number[];
 }
 
 /**

@@ -6,6 +6,10 @@ import { FolderMongo, MailboxMongo } from "../../mongo.js";
 import { BaseMapiEmsmdbRoute } from "../BaseMapiEmsmdbRoute.js";
 import { RopLogonHandler } from "../rop/RopLogonHandler.js";
 import { RopReleaseHandler } from "../rop/RopReleaseHandler.js";
+import { RopOpenFolderHandler } from "../rop/RopOpenFolderHandler.js";
+import { RopGetHierarchyTableHandler } from "../rop/RopGetHierarchyTableHandler.js";
+import { RopSetColumnsHandler } from "../rop/RopSetColumnsHandler.js";
+import { RopQueryRowsHandler } from "../rop/RopQueryRowsHandler.js";
 
 /**
  * Mongo-backed concrete `BaseMapiEmsmdbRoute`. A deployment mounts this at the well-known MAPI/HTTP path via
@@ -17,5 +21,12 @@ import { RopReleaseHandler } from "../rop/RopReleaseHandler.js";
 export class MapiEmsmdbRouteMongo extends BaseMapiEmsmdbRoute<MailboxMongo> {
     protected mailboxClass: any = MailboxMongo;
     protected folderClass: any = FolderMongo;
-    protected ropHandlerClasses: any[] = [RopLogonHandler, RopReleaseHandler];
+    protected ropHandlerClasses: any[] = [
+        RopLogonHandler,
+        RopReleaseHandler,
+        RopOpenFolderHandler,
+        RopGetHierarchyTableHandler,
+        RopSetColumnsHandler,
+        RopQueryRowsHandler,
+    ];
 }

@@ -10,10 +10,13 @@ import { JWTUtils, Logger } from "@rapidrest/core";
 import * as uuid from "uuid";
 import { Repository } from "typeorm";
 import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
+import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
+import { FolderType } from "../../../src/models/types.js";
 import { registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
 import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
+import { PropertyType, readPropertyValue, writePropertyTag } from "../../../src/mapi/codec/PropertyValue.js";
 import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
 describe("Route:MapiEmsmdbRouteSQL Tests", () => {
@@ -22,6 +25,7 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
     const server: Server = new Server({ config, basePath: "./test/server-sql", logger, objectFactory });
     const baseUrl = "/sql/mapi/emsmdb";
     let mailboxRepo: Repository<MailboxSQL>;
+    let folderRepo: Repository<FolderSQL>;
     let aclRepo: Repository<AccessControlListSQL>;
 
     const owner: any = { uid: uuid.v4(), roles: [], elevated: Date.now() };
@@ -50,6 +54,32 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
         return result;
     };
 
+    const createFolder = async function (mailboxUid: string, type: FolderType, name: string): Promise<FolderSQL> {
+        return await folderRepo.save(
+            new FolderSQL({ mailboxUid, name, type, unreadCount: 0, totalCount: 0, syncKeyVersion: 0 } as any),
+        );
+    };
+
+    const execute = async function (cookie: string, ropBuffer: Buffer) {
+        const body = new BufferWriter();
+        body.writeUInt32LE(0);
+        body.writeUInt32LE(ropBuffer.length);
+        body.writeBytes(ropBuffer);
+        body.writeUInt32LE(256 * 1024);
+        body.writeUInt32LE(0);
+        return mapiRequest(
+            server.getApplication(),
+            baseUrl,
+            {
+                Authorization: "jwt " + ownerToken,
+                "X-RequestType": "Execute",
+                "Content-Type": "application/mapi-http",
+                Cookie: cookie,
+            },
+            body.toBuffer(),
+        );
+    };
+
     const connect = async function () {
         return mapiRequest(
             server.getApplication(),
@@ -71,6 +101,7 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
         const conn: any = connMgr?.connections.get("sql");
         if (isSqlDataSource(conn)) {
             mailboxRepo = conn.getRepository(MailboxSQL);
+            folderRepo = conn.getRepository(FolderSQL);
         } else {
             throw new Error("Could not find sql connection");
         }
@@ -89,6 +120,7 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
 
     beforeEach(async () => {
         await mailboxRepo.clear();
+        await folderRepo.clear();
         await aclRepo.clear();
     });
 
@@ -204,5 +236,89 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
 
         ropsReader.readUInt8(); // ResponseFlags
         expect(decodeGuid(ropsReader)).toBe(mailbox.uid); // MailboxGuid
+    });
+
+    it("Browses the top-level folder list end to end: Logon, OpenFolder(root), GetHierarchyTable, SetColumns, QueryRows.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        await createFolder(mailbox.uid, FolderType.INBOX, "Inbox");
+        await createFolder(mailbox.uid, FolderType.USER, "Archive");
+        const connectResult = await connect();
+        const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+        const logonRops = new BufferWriter();
+        logonRops.writeUInt8(0xfe);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0x01);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt16LE(0);
+        const logonResult = await execute(cookie, encodeRopBuffer({ ropsList: logonRops.toBuffer(), handleTable: [0xffffffff] }));
+        const logonReader = new BufferReader(logonResult.body);
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        const { ropsList: logonRopsList } = decodeRopBuffer(logonReader.readBytes(logonReader.readUInt32LE()));
+        const logonRopsReader = new BufferReader(logonRopsList);
+        logonRopsReader.readUInt8();
+        logonRopsReader.readUInt8();
+        logonRopsReader.readUInt32LE();
+        logonRopsReader.readUInt8();
+        const rootFid = logonRopsReader.readBigUInt64LE();
+
+        const openFolderRops = new BufferWriter();
+        openFolderRops.writeUInt8(0x02);
+        openFolderRops.writeUInt8(0);
+        openFolderRops.writeUInt8(0); // InputHandleIndex (logon)
+        openFolderRops.writeUInt8(1); // OutputHandleIndex
+        openFolderRops.writeUInt8(0); // OpenModeFlags
+        openFolderRops.writeBigUInt64LE(rootFid);
+        await execute(cookie, encodeRopBuffer({ ropsList: openFolderRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+
+        const tableRops = new BufferWriter();
+        tableRops.writeUInt8(0x04);
+        tableRops.writeUInt8(0);
+        tableRops.writeUInt8(1); // InputHandleIndex (folder)
+        tableRops.writeUInt8(2); // OutputHandleIndex
+        tableRops.writeUInt8(0); // TableFlags
+        await execute(cookie, encodeRopBuffer({ ropsList: tableRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff, 0xffffffff] }));
+
+        const setColumnsRops = new BufferWriter();
+        setColumnsRops.writeUInt8(0x12);
+        setColumnsRops.writeUInt8(0);
+        setColumnsRops.writeUInt8(2); // InputHandleIndex (table)
+        setColumnsRops.writeUInt8(0); // SetColumnsFlags
+        setColumnsRops.writeUInt16LE(1);
+        writePropertyTag(setColumnsRops, { propertyId: 0x3001, propertyType: PropertyType.PtypString });
+        await execute(cookie, encodeRopBuffer({ ropsList: setColumnsRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const queryRowsRops = new BufferWriter();
+        queryRowsRops.writeUInt8(0x15);
+        queryRowsRops.writeUInt8(0);
+        queryRowsRops.writeUInt8(2); // InputHandleIndex (table)
+        queryRowsRops.writeUInt8(0); // QueryRowsFlags
+        queryRowsRops.writeUInt8(1); // ForwardRead
+        queryRowsRops.writeUInt16LE(10);
+        const queryRowsResult = await execute(cookie, encodeRopBuffer({ ropsList: queryRowsRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const queryRowsReader = new BufferReader(queryRowsResult.body);
+        queryRowsReader.readUInt32LE();
+        queryRowsReader.readUInt32LE();
+        queryRowsReader.readUInt32LE();
+        const { ropsList: queryRowsList } = decodeRopBuffer(queryRowsReader.readBytes(queryRowsReader.readUInt32LE()));
+        const rowsReader = new BufferReader(queryRowsList);
+        rowsReader.readUInt8();
+        rowsReader.readUInt8();
+        expect(rowsReader.readUInt32LE()).toBe(0); // ReturnValue
+        rowsReader.readUInt8(); // Origin
+        const rowCount = rowsReader.readUInt16LE();
+        expect(rowCount).toBe(2);
+
+        const names: string[] = [];
+        for (let i = 0; i < rowCount; i++) {
+            rowsReader.readUInt8(); // PropertyRow Flags
+            names.push(readPropertyValue(rowsReader, PropertyType.PtypString) as string);
+        }
+        expect(names.sort()).toEqual(["Archive", "Inbox"]);
     });
 });
