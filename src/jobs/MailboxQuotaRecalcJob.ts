@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
-import { BackgroundService, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
+import { BackgroundService, BaseEntity, ObjectFactory, RepoUtils, SimpleEntity } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
 import { Attachment, Mailbox, Message } from "../models/types.js";
 const { Config, Init, Inject, Logger } = ObjectDecorators;
@@ -112,7 +112,7 @@ export abstract class MailboxQuotaRecalcJob<MB extends Mailbox, M extends Messag
      * previous unpaginated call truncated identically on both backends, since 100 is `RepoUtils.find()`'s own
      * unconditional default, independent of which backend is in use.
      */
-    private async findAllPages<T>(
+    private async findAllPages<T extends BaseEntity | SimpleEntity>(
         repo: RepoUtils<T>,
         criteria: Record<string, any>,
         pageSize: number = 500,
