@@ -22,7 +22,7 @@ function buildRequest(logonId: number, inputHandleIndex: number, tags: { propert
 
 function makeContext(): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any };
+    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo: {} as any };
 }
 
 describe("RopSetColumnsHandler Tests", () => {

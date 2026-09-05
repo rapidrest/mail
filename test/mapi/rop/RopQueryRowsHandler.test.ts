@@ -18,9 +18,9 @@ function buildRequest({ logonId = 0, inputHandleIndex = 7, queryRowsFlags = 0, f
     return writer.toBuffer();
 }
 
-function makeContext(folderRepo: any): RopContext {
+function makeContext(folderRepo: any, messageRepo: any = {}): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo };
+    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo, messageRepo };
 }
 
 describe("RopQueryRowsHandler Tests", () => {
@@ -137,6 +137,129 @@ describe("RopQueryRowsHandler Tests", () => {
         // Decoding without throwing is the real assertion - confirms writePropertyValue() accepted the
         // default as a genuinely valid value for this type, not just "some" value.
         expect(() => readPropertyValue(response, propertyType)).not.toThrow();
+    });
+
+    it.each(allPropertyTypes)("Falls back to a valid default value for an unsupported message property of type 0x%s", async (propertyType) => {
+        const messageRepo = {
+            findOne: vi.fn().mockResolvedValue({ uid: "m1", subject: "Hi", flags: { read: false }, hasAttachments: false, receivedDate: new Date() }),
+        };
+        const context = makeContext({}, messageRepo);
+        context.session.handles[7] = {
+            type: "table",
+            entityUid: "folder:top",
+            rows: ["message:m1"],
+            cursor: 0,
+            columns: [{ propertyId: 0x9999, propertyType }],
+        };
+        const handler = new RopQueryRowsHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        response.readUInt32LE();
+        response.readUInt8();
+        response.readUInt16LE();
+        response.readUInt8(); // PropertyRow Flags
+        expect(() => readPropertyValue(response, propertyType)).not.toThrow();
+    });
+
+    it("Builds message rows with Subject/MessageFlags/HasAttachments/DeliveryTime columns.", async () => {
+        const receivedDate = new Date("2026-03-15T09:00:00.000Z");
+        const messageRepo = {
+            findOne: vi.fn().mockResolvedValue({
+                uid: "m1",
+                subject: "Hello",
+                flags: { read: true },
+                hasAttachments: true,
+                receivedDate,
+            }),
+        };
+        const context = makeContext({}, messageRepo);
+        context.session.handles[7] = {
+            type: "table",
+            entityUid: "folder:top",
+            rows: ["message:m1"],
+            cursor: 0,
+            columns: [
+                { propertyId: 0x0037, propertyType: PropertyType.PtypString },
+                { propertyId: 0x0e07, propertyType: PropertyType.PtypInteger32 },
+                { propertyId: 0x0e1b, propertyType: PropertyType.PtypBoolean },
+                { propertyId: 0x0e06, propertyType: PropertyType.PtypTime },
+            ],
+        };
+        const handler = new RopQueryRowsHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        expect(response.readUInt32LE()).toBe(0);
+        response.readUInt8();
+        expect(response.readUInt16LE()).toBe(1);
+
+        response.readUInt8(); // PropertyRow Flags
+        expect(readPropertyValue(response, PropertyType.PtypString)).toBe("Hello");
+        expect(readPropertyValue(response, PropertyType.PtypInteger32)).toBe(1); // MSGFLAG_READ
+        expect(readPropertyValue(response, PropertyType.PtypBoolean)).toBe(true);
+        expect(readPropertyValue(response, PropertyType.PtypTime)).toEqual(receivedDate);
+        expect(messageRepo.findOne).toHaveBeenCalledWith("m1", { ignoreACL: true });
+    });
+
+    it("Reports MessageFlags 0 for an unread message.", async () => {
+        const messageRepo = {
+            findOne: vi.fn().mockResolvedValue({ uid: "m1", subject: "Hi", flags: { read: false }, hasAttachments: false, receivedDate: new Date() }),
+        };
+        const context = makeContext({}, messageRepo);
+        context.session.handles[7] = {
+            type: "table",
+            entityUid: "folder:top",
+            rows: ["message:m1"],
+            cursor: 0,
+            columns: [{ propertyId: 0x0e07, propertyType: PropertyType.PtypInteger32 }],
+        };
+        const handler = new RopQueryRowsHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        response.readUInt32LE();
+        response.readUInt8();
+        response.readUInt16LE();
+        response.readUInt8();
+        expect(readPropertyValue(response, PropertyType.PtypInteger32)).toBe(0);
+    });
+
+    it("Degrades to empty values for a message row whose real Message has since vanished.", async () => {
+        const messageRepo = { findOne: vi.fn().mockResolvedValue(undefined) };
+        const context = makeContext({}, messageRepo);
+        context.session.handles[7] = {
+            type: "table",
+            entityUid: "folder:top",
+            rows: ["message:gone"],
+            cursor: 0,
+            columns: [{ propertyId: 0x0037, propertyType: PropertyType.PtypString }],
+        };
+        const handler = new RopQueryRowsHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        response.readUInt32LE();
+        response.readUInt8();
+        response.readUInt16LE();
+        response.readUInt8();
+        expect(readPropertyValue(response, PropertyType.PtypString)).toBe("");
     });
 
     it("Respects the requested RowCount, leaving remaining rows for a subsequent call.", async () => {

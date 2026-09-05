@@ -11,7 +11,8 @@ import * as uuid from "uuid";
 import { Repository } from "typeorm";
 import { MailboxSQL } from "../../../src/models/sql/MailboxSQL.js";
 import { FolderSQL } from "../../../src/models/sql/FolderSQL.js";
-import { FolderType } from "../../../src/models/types.js";
+import { MessageSQL } from "../../../src/models/sql/MessageSQL.js";
+import { FolderType, MessageImportance, RecipientType } from "../../../src/models/types.js";
 import { registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
@@ -26,6 +27,7 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
     const baseUrl = "/sql/mapi/emsmdb";
     let mailboxRepo: Repository<MailboxSQL>;
     let folderRepo: Repository<FolderSQL>;
+    let messageRepo: Repository<MessageSQL>;
     let aclRepo: Repository<AccessControlListSQL>;
 
     const owner: any = { uid: uuid.v4(), roles: [], elevated: Date.now() };
@@ -57,6 +59,28 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
     const createFolder = async function (mailboxUid: string, type: FolderType, name: string): Promise<FolderSQL> {
         return await folderRepo.save(
             new FolderSQL({ mailboxUid, name, type, unreadCount: 0, totalCount: 0, syncKeyVersion: 0 } as any),
+        );
+    };
+
+    const createMessage = async function (mailboxUid: string, folderUid: string, data?: Partial<MessageSQL>): Promise<MessageSQL> {
+        return await messageRepo.save(
+            new MessageSQL({
+                mailboxUid,
+                folderUid,
+                messageId: `${uuid.v4()}@example.com`,
+                subject: "Test Subject",
+                from: { address: "sender@example.com", displayName: "Sender", type: RecipientType.TO },
+                recipients: [{ address: "owner@example.com", type: RecipientType.TO }],
+                sentDate: new Date(),
+                receivedDate: new Date("2026-03-15T09:00:00.000Z"),
+                bodyBlobKey: `bodies/${uuid.v4()}`,
+                bodyPreview: "Hello world",
+                flags: { read: true, flagged: false, answered: false, forwarded: false },
+                importance: MessageImportance.NORMAL,
+                references: [],
+                hasAttachments: false,
+                ...data,
+            } as any),
         );
     };
 
@@ -102,6 +126,7 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
         if (isSqlDataSource(conn)) {
             mailboxRepo = conn.getRepository(MailboxSQL);
             folderRepo = conn.getRepository(FolderSQL);
+            messageRepo = conn.getRepository(MessageSQL);
         } else {
             throw new Error("Could not find sql connection");
         }
@@ -121,6 +146,7 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
     beforeEach(async () => {
         await mailboxRepo.clear();
         await folderRepo.clear();
+        await messageRepo.clear();
         await aclRepo.clear();
     });
 
@@ -320,5 +346,94 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
             names.push(readPropertyValue(rowsReader, PropertyType.PtypString) as string);
         }
         expect(names.sort()).toEqual(["Archive", "Inbox"]);
+    });
+
+    it("Lists a folder's messages end to end: Logon, OpenFolder(inbox), GetContentsTable, SetColumns, QueryRows.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const inbox = await createFolder(mailbox.uid, FolderType.INBOX, "Inbox");
+        await createMessage(mailbox.uid, inbox.uid, { subject: "Hello World" });
+        await createMessage(mailbox.uid, inbox.uid, { subject: "Second Message" });
+        const connectResult = await connect();
+        const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+        const logonRops = new BufferWriter();
+        logonRops.writeUInt8(0xfe);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0x01);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt16LE(0);
+        const logonResult = await execute(cookie, encodeRopBuffer({ ropsList: logonRops.toBuffer(), handleTable: [0xffffffff] }));
+        const logonReader = new BufferReader(logonResult.body);
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        logonReader.readUInt32LE();
+        const { ropsList: logonRopsList } = decodeRopBuffer(logonReader.readBytes(logonReader.readUInt32LE()));
+        const logonRopsReader = new BufferReader(logonRopsList);
+        logonRopsReader.readUInt8(); // RopId
+        logonRopsReader.readUInt8(); // OutputHandleIndex
+        logonRopsReader.readUInt32LE(); // ReturnValue
+        logonRopsReader.readUInt8(); // LogonFlags
+        logonRopsReader.readBigUInt64LE(); // FolderIds[0] = Root
+        logonRopsReader.readBigUInt64LE(); // FolderIds[1] = Deferred Action
+        logonRopsReader.readBigUInt64LE(); // FolderIds[2] = Spooler Queue
+        logonRopsReader.readBigUInt64LE(); // FolderIds[3] = IPM Subtree
+        const inboxFid = logonRopsReader.readBigUInt64LE(); // FolderIds[4] = Inbox
+
+        const openFolderRops = new BufferWriter();
+        openFolderRops.writeUInt8(0x02);
+        openFolderRops.writeUInt8(0);
+        openFolderRops.writeUInt8(0); // InputHandleIndex (logon)
+        openFolderRops.writeUInt8(1); // OutputHandleIndex
+        openFolderRops.writeUInt8(0); // OpenModeFlags
+        openFolderRops.writeBigUInt64LE(inboxFid);
+        await execute(cookie, encodeRopBuffer({ ropsList: openFolderRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff] }));
+
+        const tableRops = new BufferWriter();
+        tableRops.writeUInt8(0x05);
+        tableRops.writeUInt8(0);
+        tableRops.writeUInt8(1); // InputHandleIndex (folder)
+        tableRops.writeUInt8(2); // OutputHandleIndex
+        tableRops.writeUInt8(0); // TableFlags
+        await execute(cookie, encodeRopBuffer({ ropsList: tableRops.toBuffer(), handleTable: [0xffffffff, 0xffffffff, 0xffffffff] }));
+
+        const setColumnsRops = new BufferWriter();
+        setColumnsRops.writeUInt8(0x12);
+        setColumnsRops.writeUInt8(0);
+        setColumnsRops.writeUInt8(2); // InputHandleIndex (table)
+        setColumnsRops.writeUInt8(0); // SetColumnsFlags
+        setColumnsRops.writeUInt16LE(1);
+        writePropertyTag(setColumnsRops, { propertyId: 0x0037, propertyType: PropertyType.PtypString });
+        await execute(cookie, encodeRopBuffer({ ropsList: setColumnsRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const queryRowsRops = new BufferWriter();
+        queryRowsRops.writeUInt8(0x15);
+        queryRowsRops.writeUInt8(0);
+        queryRowsRops.writeUInt8(2); // InputHandleIndex (table)
+        queryRowsRops.writeUInt8(0); // QueryRowsFlags
+        queryRowsRops.writeUInt8(1); // ForwardRead
+        queryRowsRops.writeUInt16LE(10);
+        const queryRowsResult = await execute(cookie, encodeRopBuffer({ ropsList: queryRowsRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const queryRowsReader = new BufferReader(queryRowsResult.body);
+        queryRowsReader.readUInt32LE();
+        queryRowsReader.readUInt32LE();
+        queryRowsReader.readUInt32LE();
+        const { ropsList: queryRowsList } = decodeRopBuffer(queryRowsReader.readBytes(queryRowsReader.readUInt32LE()));
+        const rowsReader = new BufferReader(queryRowsList);
+        rowsReader.readUInt8();
+        rowsReader.readUInt8();
+        expect(rowsReader.readUInt32LE()).toBe(0); // ReturnValue
+        rowsReader.readUInt8(); // Origin
+        const rowCount = rowsReader.readUInt16LE();
+        expect(rowCount).toBe(2);
+
+        const subjects: string[] = [];
+        for (let i = 0; i < rowCount; i++) {
+            rowsReader.readUInt8(); // PropertyRow Flags
+            subjects.push(readPropertyValue(rowsReader, PropertyType.PtypString) as string);
+        }
+        expect(subjects.sort()).toEqual(["Hello World", "Second Message"]);
     });
 });

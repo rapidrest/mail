@@ -5,6 +5,7 @@
 import { BufferReader, BufferWriter } from "../codec/BufferCursor.js";
 import { PropertyType, PropertyValueData, writePropertyValue } from "../codec/PropertyValue.js";
 import { assignOrGetFid, FolderTargetInfo, resolveFolderInfo } from "./FolderTarget.js";
+import { MessageTargetInfo, resolveMessageInfo } from "./MessageTarget.js";
 import type { RopContext, RopHandler } from "./RopHandler.js";
 
 const ROP_ID_QUERY_ROWS = 0x15;
@@ -25,6 +26,15 @@ const PID_TAG_CONTENT_COUNT = 0x3602;
 const PID_TAG_CONTENT_UNREAD_COUNT = 0x3603;
 const PID_TAG_SUBFOLDERS = 0x360a;
 
+// Well-known message property IDs this pragmatic subset supports as RopQueryRows columns (a folder's contents
+// table, RopGetContentsTable) - the small set a real client needs to render a message list.
+const PID_TAG_SUBJECT = 0x0037;
+const PID_TAG_MESSAGE_FLAGS = 0x0e07;
+const PID_TAG_HAS_ATTACHMENTS = 0x0e1b;
+const PID_TAG_MESSAGE_DELIVERY_TIME = 0x0e06;
+/** `MSGFLAG_READ`, the one `PidTagMessageFlags` bit this pragmatic subset ever sets. */
+const MSGFLAG_READ = 0x01;
+
 /**
  * `RopQueryRows` (`[MS-OXCTABL]`/`[MS-OXCROPS]`): fetches up to `RowCount` rows from an already-configured
  * table (`RopGetHierarchyTable` + `RopSetColumns`), advancing the table's cursor. Confirmed field-by-field
@@ -37,9 +47,11 @@ const PID_TAG_SUBFOLDERS = 0x360a;
  * per-column error signaling is never needed.
  *
  * Backward reads (`ForwardRead = FALSE`) and the `NoAdvance` flag are decoded (to advance the reader
- * correctly) but not honored - this pragmatic subset's tables are simple forward-only cursors. Only folder
- * tables (`RopGetHierarchyTable`'s handles) are supported so far; a future `RopGetContentsTable` step will
- * extend `valueFor()` for message-table columns.
+ * correctly) but not honored - this pragmatic subset's tables are simple forward-only cursors. Works generically
+ * against either a `RopGetHierarchyTable` (folder rows, `"folder:"`/`"virtual:"` targets) or a
+ * `RopGetContentsTable` (message rows, `"message:"` targets) handle - dispatching to `FolderTarget`'s or
+ * `MessageTarget`'s resolver and property-value mapping by row-target prefix, since a single table handle only
+ * ever holds one kind of row.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -88,15 +100,19 @@ export class RopQueryRowsHandler implements RopHandler {
     ): Promise<Buffer> {
         const writer = new BufferWriter();
         writer.writeUInt8(0x00); // Flags - StandardPropertyRow, see class doc comment
-        const info: FolderTargetInfo = await resolveFolderInfo(context.mailboxUid, target, context.folderRepo);
+        const isMessage = target.startsWith("message:");
+        const folderInfo = isMessage ? undefined : await resolveFolderInfo(context.mailboxUid, target, context.folderRepo);
+        const messageInfo = isMessage ? await resolveMessageInfo(target, context.messageRepo) : undefined;
         for (const column of columns) {
-            const value = this.valueFor(column.propertyId, column.propertyType, target, info, context);
+            const value = messageInfo
+                ? this.messageValueFor(column.propertyId, column.propertyType, messageInfo)
+                : this.folderValueFor(column.propertyId, column.propertyType, target, folderInfo!, context);
             writePropertyValue(writer, column.propertyType, value);
         }
         return writer.toBuffer();
     }
 
-    private valueFor(
+    private folderValueFor(
         propertyId: number,
         propertyType: PropertyType,
         target: string,
@@ -114,6 +130,21 @@ export class RopQueryRowsHandler implements RopHandler {
                 return info.unreadCount;
             case PID_TAG_SUBFOLDERS:
                 return info.hasChildren;
+            default:
+                return defaultValueForType(propertyType);
+        }
+    }
+
+    private messageValueFor(propertyId: number, propertyType: PropertyType, info: MessageTargetInfo): PropertyValueData {
+        switch (propertyId) {
+            case PID_TAG_SUBJECT:
+                return info.subject;
+            case PID_TAG_MESSAGE_FLAGS:
+                return info.read ? MSGFLAG_READ : 0;
+            case PID_TAG_HAS_ATTACHMENTS:
+                return info.hasAttachments;
+            case PID_TAG_MESSAGE_DELIVERY_TIME:
+                return info.receivedDate;
             default:
                 return defaultValueForType(propertyType);
         }

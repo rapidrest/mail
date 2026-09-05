@@ -1,0 +1,100 @@
+///////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Jean-Philippe Steinmetz
+// SPDX-License-Identifier: MPL-2.0
+///////////////////////////////////////////////////////////////////////////////
+import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
+import { RopGetContentsTableHandler } from "../../../src/mapi/rop/RopGetContentsTableHandler.js";
+import type { RopContext } from "../../../src/mapi/rop/RopHandler.js";
+import { MapiSessionContext } from "../../../src/mapi/MapiSessionManager.js";
+
+function buildRequest({ logonId = 0, inputHandleIndex = 5, outputHandleIndex = 6, tableFlags = 0 }): Buffer {
+    const writer = new BufferWriter();
+    writer.writeUInt8(logonId);
+    writer.writeUInt8(inputHandleIndex);
+    writer.writeUInt8(outputHandleIndex);
+    writer.writeUInt8(tableFlags);
+    return writer.toBuffer();
+}
+
+describe("RopGetContentsTableHandler Tests", () => {
+    it("Has RopId 0x05.", () => {
+        expect(new RopGetContentsTableHandler().ropId).toBe(0x05);
+    });
+
+    it("Creates a table handle listing the folder's messages, resolved via the message repo.", async () => {
+        const messageRepo = {
+            find: vi.fn().mockResolvedValue([
+                { uid: "msg1", folderUid: "top1" },
+                { uid: "msg2", folderUid: "top1" },
+            ]),
+        };
+        const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
+        session.handles[5] = { type: "folder", entityUid: "folder:top1" };
+        const context: RopContext = {
+            mailboxUid: "mailbox-1",
+            userUid: "user-1",
+            session,
+            folderRepo: {} as any,
+            messageRepo: messageRepo as any,
+        };
+
+        const handler = new RopGetContentsTableHandler();
+        const writer = new BufferWriter();
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        expect(response.readUInt8()).toBe(0x05);
+        expect(response.readUInt8()).toBe(6);
+        expect(response.readUInt32LE()).toBe(0);
+        expect(response.hasMore()).toBe(false);
+
+        expect(session.handles[6]).toEqual({
+            type: "table",
+            entityUid: "folder:top1",
+            rows: ["message:msg1", "message:msg2"],
+            cursor: 0,
+        });
+        expect(messageRepo.find).toHaveBeenCalledWith({ folderUid: "top1" }, { ignoreACL: true });
+    });
+
+    it("Returns an empty table for a virtual folder, without querying the message repo.", async () => {
+        const messageRepo = { find: vi.fn() };
+        const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
+        session.handles[5] = { type: "folder", entityUid: "virtual:root" };
+        const context: RopContext = {
+            mailboxUid: "mailbox-1",
+            userUid: "user-1",
+            session,
+            folderRepo: {} as any,
+            messageRepo: messageRepo as any,
+        };
+
+        const handler = new RopGetContentsTableHandler();
+        const writer = new BufferWriter();
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        expect(session.handles[6]?.rows).toEqual([]);
+        expect(messageRepo.find).not.toHaveBeenCalled();
+    });
+
+    it("Returns MAPI_E_INVALID_OBJECT when InputHandleIndex isn't a folder handle.", async () => {
+        const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
+        const context: RopContext = {
+            mailboxUid: "mailbox-1",
+            userUid: "user-1",
+            session,
+            folderRepo: {} as any,
+            messageRepo: {} as any,
+        };
+        const handler = new RopGetContentsTableHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({ inputHandleIndex: 99 })), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8();
+        response.readUInt8();
+        expect(response.readUInt32LE()).toBe(0x80070005);
+        expect(session.handles[6]).toBeUndefined();
+    });
+});

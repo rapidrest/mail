@@ -21,6 +21,7 @@ export interface RopContext {
     userUid: string;
     session: MapiSessionContext;
     folderRepo: RepoUtils<any>;
+    messageRepo: RepoUtils<any>;
 }
 
 /**

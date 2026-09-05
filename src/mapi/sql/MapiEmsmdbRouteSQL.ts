@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { FolderSQL, MailboxSQL } from "../../sql.js";
+import { FolderSQL, MailboxSQL, MessageSQL } from "../../sql.js";
 import { BaseMapiEmsmdbRoute } from "../BaseMapiEmsmdbRoute.js";
 import { RopLogonHandler } from "../rop/RopLogonHandler.js";
 import { RopReleaseHandler } from "../rop/RopReleaseHandler.js";
 import { RopOpenFolderHandler } from "../rop/RopOpenFolderHandler.js";
 import { RopGetHierarchyTableHandler } from "../rop/RopGetHierarchyTableHandler.js";
+import { RopGetContentsTableHandler } from "../rop/RopGetContentsTableHandler.js";
 import { RopSetColumnsHandler } from "../rop/RopSetColumnsHandler.js";
 import { RopQueryRowsHandler } from "../rop/RopQueryRowsHandler.js";
 
@@ -20,11 +21,13 @@ import { RopQueryRowsHandler } from "../rop/RopQueryRowsHandler.js";
 export class MapiEmsmdbRouteSQL extends BaseMapiEmsmdbRoute<MailboxSQL> {
     protected mailboxClass: any = MailboxSQL;
     protected folderClass: any = FolderSQL;
+    protected messageClass: any = MessageSQL;
     protected ropHandlerClasses: any[] = [
         RopLogonHandler,
         RopReleaseHandler,
         RopOpenFolderHandler,
         RopGetHierarchyTableHandler,
+        RopGetContentsTableHandler,
         RopSetColumnsHandler,
         RopQueryRowsHandler,
     ];

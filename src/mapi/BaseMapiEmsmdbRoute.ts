@@ -69,6 +69,7 @@ function firstHeader(req: HttpRequest, name: string): string | undefined {
 export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     protected abstract mailboxClass: any;
     protected abstract folderClass: any;
+    protected abstract messageClass: any;
 
     /** ROP handler classes to instantiate (one each) in `@Init`, keyed by their own `ropId`. Empty until a
      * concrete `RopHandler` lands - every ROP is then simply left unprocessed (see `RopDispatcher`'s own doc
@@ -80,6 +81,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
 
     private mailboxRepo?: RepoUtils<M>;
     private folderRepo?: RepoUtils<Folder>;
+    private messageRepo?: RepoUtils<any>;
     private sessionManager?: MapiSessionManager;
     private readonly ropHandlers = new Map<number, RopHandler>();
 
@@ -96,6 +98,10 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             name: this.folderClass.name,
             args: [this.folderClass],
         });
+        this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+            name: this.messageClass.name,
+            args: [this.messageClass],
+        });
         this.sessionManager = await this._objectFactory!.newInstance(MapiSessionManager);
         for (const HandlerClass of this.ropHandlerClasses) {
             const handler: RopHandler = await this._objectFactory!.newInstance(HandlerClass);
@@ -110,7 +116,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
         @Response res: HttpResponse,
         @AuthUser user?: JWTUser,
     ): Promise<void> {
-        if (!this.mailboxRepo || !this.folderRepo || !this.sessionManager) {
+        if (!this.mailboxRepo || !this.folderRepo || !this.messageRepo || !this.sessionManager) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
         if (!user) {
@@ -218,6 +224,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             userUid: session.userUid,
             session,
             folderRepo: this.folderRepo!,
+            messageRepo: this.messageRepo!,
         };
         const responseRopsList: Buffer = await dispatchRops(ropsList, this.ropHandlers, context);
         const responseRopBuffer: Buffer = encodeRopBuffer({ ropsList: responseRopsList, handleTable });

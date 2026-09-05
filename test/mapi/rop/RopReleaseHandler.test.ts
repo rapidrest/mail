@@ -16,6 +16,7 @@ describe("RopReleaseHandler Tests", () => {
             userUid: "user-1",
             session: new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" }),
             folderRepo: {} as any,
+            messageRepo: {} as any,
         };
     };
 
