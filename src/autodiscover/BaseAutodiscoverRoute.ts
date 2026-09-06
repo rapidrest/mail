@@ -4,7 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
 import { HttpRequest, HttpResponse, ObjectFactory, RepoUtils, RouteDecorators } from "@rapidrest/service-core";
-import { buildPoxSuccessXml, extractEmailAddress } from "./AutodiscoverXml.js";
+import {
+    buildOutlookSuccessXml,
+    buildPoxSuccessXml,
+    extractAcceptableResponseSchema,
+    extractEmailAddress,
+    OUTLOOK_RESPONSE_SCHEMA,
+} from "./AutodiscoverXml.js";
 import { Mailbox } from "../models/types.js";
 const { Init, Logger } = ObjectDecorators;
 const { Get, Param, Post, Query, Request, Response } = RouteDecorators;
@@ -23,6 +29,7 @@ const { Get, Param, Post, Query, Request, Response } = RouteDecorators;
  * @Route("/autodiscover")
  * export class MyAutodiscoverRoute extends AutodiscoverRouteMongo {
  *     protected readonly easUrl = "https://mail.example.com/Microsoft-Server-ActiveSync";
+ *     protected readonly mapiUrl = "https://mail.example.com/mapi/emsmdb";
  * }
  * ```
  * which composes with this class's own relative method paths to land exactly on the real spec's conventional
@@ -47,8 +54,8 @@ const { Get, Param, Post, Query, Request, Response } = RouteDecorators;
  * request actually arrives at one of its two paths.
  *
  * `mailboxClass` is supplied by the Mongo/SQL concrete subclasses following the exact one-line-per-backend
- * pattern used throughout this library. `easUrl` remains abstract even after that - it's a deployment-specific
- * value only the consuming application's own subclass can supply.
+ * pattern used throughout this library. `easUrl`/`mapiUrl` remain abstract even after that - both are
+ * deployment-specific values only the consuming application's own subclass can supply.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -58,6 +65,11 @@ export abstract class BaseAutodiscoverRoute<M extends Mailbox> {
     /** The EAS endpoint URL to report - e.g. `https://mail.example.com/Microsoft-Server-ActiveSync`, matching
      * whatever `@Route(...)` path the deployment mounted its `BaseEasRoute` subclass at. */
     protected abstract readonly easUrl: string;
+
+    /** The MAPI/HTTP `emsmdb` endpoint URL to report to a real Outlook desktop client - e.g.
+     * `https://mail.example.com/mapi/emsmdb`, matching whatever `@Route(...)` path the deployment mounted its
+     * `BaseMapiEmsmdbRoute` subclass at. Only used by `pox()`'s Outlook/EXCH response branch. */
+    protected abstract readonly mapiUrl: string;
 
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
@@ -99,6 +111,11 @@ export abstract class BaseAutodiscoverRoute<M extends Mailbox> {
      * as validly conveyed via a plain HTTP status as via an inner `Error` element, so this uses the HTTP-status
      * form for both error cases rather than inventing values for `[MS-ASCMD]`'s provider-specific numeric
      * error-code table.
+     *
+     * Branches on the request's `AcceptableResponseSchema` to decide which response shape to build: a real
+     * Outlook desktop client sends `[MS-OXDSCLI]`'s Outlook/EXCH schema (`OUTLOOK_RESPONSE_SCHEMA`) to locate
+     * this deployment's MAPI/HTTP endpoint (`buildOutlookSuccessXml`); any other value (or a mobile/EAS-only
+     * client that omits the field entirely) gets the original MobileSync/EAS response (`buildPoxSuccessXml`).
      */
     @Post("/autodiscover.xml")
     public async pox(@Request req: HttpRequest, @Response res: HttpResponse): Promise<void> {
@@ -120,11 +137,18 @@ export abstract class BaseAutodiscoverRoute<M extends Mailbox> {
             return;
         }
 
-        const xml: string = buildPoxSuccessXml({
-            emailAddress: email,
-            displayName: mailbox.displayName,
-            easUrl: this.easUrl,
-        });
+        const xml: string =
+            extractAcceptableResponseSchema(body) === OUTLOOK_RESPONSE_SCHEMA
+                ? buildOutlookSuccessXml({
+                      emailAddress: email,
+                      displayName: mailbox.displayName,
+                      mapiUrl: this.mapiUrl,
+                  })
+                : buildPoxSuccessXml({
+                      emailAddress: email,
+                      displayName: mailbox.displayName,
+                      easUrl: this.easUrl,
+                  });
         res.setHeader("Content-Type", "application/xml; charset=utf-8").status(200).send(xml);
     }
 

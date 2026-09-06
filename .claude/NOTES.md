@@ -29,6 +29,68 @@ Keep entries terse — this is a reference, not a transcript.
 
 ## Session Log
 
+### 2026-09-06 — MAPI Phase 3, steps 10-13 (delete ROPs, pragmatic ICS, minimal NSPI, Autodiscover Outlook/EXCH)
+
+- **`RecoverableRepoUtils` gap found before implementing delete ROPs**: `BaseMapiEmsmdbRoute.ts` was building
+  plain `RepoUtils` (not `RecoverableRepoUtils`) for `folderRepo`/`messageRepo`/`calendarEventRepo`, so a
+  MAPI-driven delete would never bump `dateModified`/`version` — silently breaking EAS's own watermark-based
+  incremental-sync deletion detection for anything deleted via MAPI instead of the REST API. Fixed before
+  `RopDeleteMessagesHandler`/`RopDeleteFolderHandler` landed, not after.
+- **`RopDeleteMessages`(0x1E)/`RopDeleteFolder`(0x1D)** confirmed against `MS-OXCROPS`; `DeleteFolderFlags`
+  bits (`DEL_MESSAGES`/`DEL_FOLDERS`/`DELETE_HARD_DELETE`) map directly onto `RepoDeleteOptions.purge`.
+- **FastTransfer (`RopFastTransferSourceCopyTo`/`CopyProperties`/`GetBuffer`)**: this pragmatic subset always
+  builds a full, non-differential dump — no real IDSET/`IncrSyncChg`/`IncrSyncDel` grammar, which needs
+  persisted per-device state this library doesn't implement. A real client still works correctly against
+  this (it reconciles by diffing the dump against its own local cache); it's just less efficient than
+  byte-perfect ICS. `RopFastTransferSourceCopyTo`'s `CopyFlags` is 4 bytes; `CopyProperties`'s own `CopyFlags`
+  is 1 byte — confirmed via spec, easy to get wrong by assuming they match.
+- **NSPI (`/mapi/nspi`) deliberately has no real session state** between `Bind` and later calls — every
+  operation independently re-authenticates via the same JWT and re-resolves the caller's mailbox, since the
+  real spec's session cookie mainly serves multi-server-farm request affinity, not additional auth. `Bind`
+  mints an opaque, unvalidated `NspiContext` cookie purely for wire-format conformance.
+- **Design principle reused twice this session, worth keeping in mind for any future variant-length-structure
+  decoder**: when a structure's byte length is type/variant-dependent and only some variants are understood,
+  the decoder must either fully consume the exact right number of bytes or throw — never silently return a
+  "not applicable" value while leaving the reader mid-structure, since that corrupts every subsequently-
+  decoded field. Caught in `extractContentRestrictionSearchTerm` (`NspiCodec.ts`) before implementation: it
+  throws for any non-`RES_CONTENT` restriction type rather than returning `undefined`.
+- **Commit-message rewrite scope, settled**: only the 18 commits ahead of `origin/main`'s `0.2.0` tag were
+  rewritten via `git filter-branch --msg-filter` (verified via an empty `git diff` against a backup branch);
+  already-published history was deliberately left alone — see the entry above this one for the full reasoning
+  (unchanged, just noting the backup branch `backup-before-msg-rewrite-2026-09-06` is still present locally).
+- **Autodiscover Outlook/EXCH extension (step 13)**: real Outlook desktop finds `/mapi/emsmdb` via the classic
+  POX "Outlook" namespace (`AcceptableResponseSchema` = `.../outlook/responseschema/2006a`), a different
+  response shape from the EAS-only MobileSync response `BaseAutodiscoverRoute.pox()` already served. Confirmed
+  the exact XSD via `WebFetch` against the real `[MS-OXDSCLI]` spec pages (not a WebSearch summary — the first
+  WebSearch pass returned a plausible-looking but unverified summary, correctly not trusted until a direct
+  spec-page fetch confirmed it field-by-field).
+  - **Key confirmed fact**: `[MS-OXDSCLI]`'s "Processing the X-MapiHttpCapability Header" section states a
+    mapiHttp-capable client's response **MUST** carry a `Protocol` element with `Type`/`Version` as XML
+    *attributes* (`<Protocol Type="mapiHttp" Version="1">`), not the classic `<Type>EXCH</Type>` **child
+    element** used for RPC/TCP MAPI — and **MUST NOT** include an EXCH/EXPR protocol block at all when doing
+    so. The two forms are mutually exclusive by spec, not just alternatives — easy to get wrong by trying to
+    include both "for compatibility."
+  - Since this library only speaks MAPI/HTTP (no classic RPC/TCP MAPI transport), `buildOutlookSuccessXml()`
+    always returns the mapiHttp form and never negotiates via the real `X-MapiHttpCapability` request header —
+    documented as a deliberate simplification, not an oversight.
+  - `LegacyDN`/`DeploymentId` are schema-required fields with no real backing concept in this library (no
+    X.500 DN resolution, no multi-tenant deployment identity) — both are synthesized placeholders; real
+    Outlook doesn't validate their exact content for MAPI/HTTP connectivity specifically.
+  - `BaseAutodiscoverRoute` gained an abstract `mapiUrl` property (sibling to `easUrl`) and `pox()` now
+    branches on `extractAcceptableResponseSchema(body)` to pick `buildOutlookSuccessXml` vs the original
+    `buildPoxSuccessXml`.
+- **Full-suite coverage audit finding, not fixed in this session (out of scope for Phase 3)**: running the
+  *entire* `npx vitest run --coverage` (not just the touched files) surfaces small, pre-existing statement/
+  function/line gaps in several Phase 1/Phase 2 files never touched this session —
+  `EmailSyncAdapter.ts`, `SendMailCommand.ts`, `ProvisionCommand.ts`, `PingCommand.ts`, `SearchCommand.ts`,
+  `SyncCommand.ts`, `CalendarStorageRecalcJob.ts`, `ScanQueueJob.ts`, `MailboxRoute.ts`, `MessageRoute.ts`,
+  `ChildRoute.ts`, `MailIngestRoute.ts`, `FolderRoute.ts`, `CalendarShareLinkRoute.ts`,
+  `MailboxRouteMongo.ts`/`SQL.ts`, `PlainTextExtractor.ts` — overall 99.8-99.9% stmt/func/line (branches are
+  fine at 98%, above the ≥95% floor). None of these are files this session touched, and verifying "clean"
+  per-step against only the touched test files (the practice this whole project has followed) never surfaces
+  them. Worth a dedicated cleanup pass later; not addressed here to avoid scope creep into unrelated
+  already-shipped phases while mid-way through Phase 3's own step sequence.
+
 ### 2026-09-06 — MAPI Phase 3, Calendar sub-phase (steps 9a-9f)
 
 - **New Outlook / Graph API reality check** (settled, don't re-litigate): researched whether to pivot MAPI

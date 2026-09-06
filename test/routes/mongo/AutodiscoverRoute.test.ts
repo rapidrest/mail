@@ -53,6 +53,16 @@ describe("Route:AutodiscoverRouteMongo Tests", () => {
 </Autodiscover>`;
     };
 
+    const outlookPoxRequestBody = function (email: string): string {
+        return `<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+    <Request>
+        <EMailAddress>${email}</EMailAddress>
+        <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+    </Request>
+</Autodiscover>`;
+    };
+
     beforeAll(async () => {
         await mongod.start();
         registerTestDoubles(objectFactory);
@@ -148,6 +158,25 @@ describe("Route:AutodiscoverRouteMongo Tests", () => {
                 .set("Content-Type", "text/xml")
                 .send("<Autodiscover><Request></Request></Autodiscover>");
             expect(result.status).toBe(400);
+        });
+
+        it("Returns an Outlook/EXCH mapiHttp response when AcceptableResponseSchema requests the Outlook schema.", async () => {
+            const mailbox = await createMailbox({ displayName: "Ada Lovelace" });
+
+            const result = await request(server.getApplication())
+                .post(`${baseUrl}/autodiscover.xml`)
+                .set("Content-Type", "text/xml")
+                .send(outlookPoxRequestBody(mailbox.primarySmtpAddress));
+
+            expect(result.status).toBe(200);
+            expect(result.headers["content-type"]).toContain("application/xml");
+            const xml = result.text;
+            expect(xml).toContain("http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a");
+            expect(xml).toContain(`<AutoDiscoverSMTPAddress>${mailbox.primarySmtpAddress}</AutoDiscoverSMTPAddress>`);
+            expect(xml).toContain("<DisplayName>Ada Lovelace</DisplayName>");
+            expect(xml).toContain('<Protocol Type="mapiHttp" Version="1">');
+            expect(xml).toContain("<InternalUrl>https://mail.example.com/mapi/emsmdb</InternalUrl>");
+            expect(xml).not.toContain("<autodiscover:Type>MobileSync</autodiscover:Type>");
         });
     });
 

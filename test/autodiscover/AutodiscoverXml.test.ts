@@ -5,7 +5,14 @@
 // AutodiscoverXml is pure string logic with no DI/DB dependency, so it's tested directly here rather than only
 // indirectly through a real-server HTTP round trip - the same precedent test/eas/codec/WbxmlCodec.test.ts sets
 // for the WBXML codec.
-import { buildPoxSuccessXml, escapeXml, extractEmailAddress } from "../../src/autodiscover/AutodiscoverXml.js";
+import {
+    buildOutlookSuccessXml,
+    buildPoxSuccessXml,
+    escapeXml,
+    extractAcceptableResponseSchema,
+    extractEmailAddress,
+    OUTLOOK_RESPONSE_SCHEMA,
+} from "../../src/autodiscover/AutodiscoverXml.js";
 
 describe("AutodiscoverXml Tests", () => {
     describe("extractEmailAddress", () => {
@@ -106,6 +113,73 @@ describe("AutodiscoverXml Tests", () => {
                 easUrl: "https://mail.example.com/Microsoft-Server-ActiveSync",
             });
             expect(extractEmailAddress(xml)).toBe("round@example.com");
+        });
+    });
+
+    describe("extractAcceptableResponseSchema", () => {
+        it("Extracts the AcceptableResponseSchema field from a real Outlook request body.", () => {
+            const xml = `<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+    <Request>
+        <EMailAddress>chris@woodgrovebank.com</EMailAddress>
+        <AcceptableResponseSchema>${OUTLOOK_RESPONSE_SCHEMA}</AcceptableResponseSchema>
+    </Request>
+</Autodiscover>`;
+            expect(extractAcceptableResponseSchema(xml)).toBe(OUTLOOK_RESPONSE_SCHEMA);
+        });
+
+        it("Extracts the field even when it is namespace-prefixed.", () => {
+            const xml = `<autodiscover:AcceptableResponseSchema>https://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</autodiscover:AcceptableResponseSchema>`;
+            expect(extractAcceptableResponseSchema(xml)).toBe(
+                "https://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006",
+            );
+        });
+
+        it("Returns undefined when no AcceptableResponseSchema element is present.", () => {
+            expect(extractAcceptableResponseSchema(`<Autodiscover><Request></Request></Autodiscover>`)).toBeUndefined();
+        });
+
+        it("Returns undefined when the element is present but empty.", () => {
+            expect(extractAcceptableResponseSchema(`<AcceptableResponseSchema></AcceptableResponseSchema>`)).toBeUndefined();
+        });
+    });
+
+    describe("buildOutlookSuccessXml", () => {
+        it("Produces a well-formed Outlook/EXCH 2006a Response with the expected structure and values.", () => {
+            const xml = buildOutlookSuccessXml({
+                emailAddress: "chris@woodgrovebank.com",
+                displayName: "Chris Gray",
+                mapiUrl: "https://mail.example.com/mapi/emsmdb",
+            });
+
+            expect(xml).toContain('xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006"');
+            expect(xml).toContain(`<Response xmlns="${OUTLOOK_RESPONSE_SCHEMA}">`);
+            expect(xml).toContain("<DisplayName>Chris Gray</DisplayName>");
+            expect(xml).toContain("<AutoDiscoverSMTPAddress>chris@woodgrovebank.com</AutoDiscoverSMTPAddress>");
+            expect(xml).toContain('<Protocol Type="mapiHttp" Version="1">');
+            expect(xml).toContain("<InternalUrl>https://mail.example.com/mapi/emsmdb</InternalUrl>");
+            expect(xml).toContain("<ExternalUrl>https://mail.example.com/mapi/emsmdb</ExternalUrl>");
+            expect(xml).not.toContain("<Type>EXCH</Type>");
+            expect(xml).not.toContain("<Type>EXPR</Type>");
+        });
+
+        it("Falls back to the email address as DisplayName when no display name is given.", () => {
+            const xml = buildOutlookSuccessXml({
+                emailAddress: "noname@example.com",
+                mapiUrl: "https://mail.example.com/mapi/emsmdb",
+            });
+            expect(xml).toContain("<DisplayName>noname@example.com</DisplayName>");
+        });
+
+        it("Escapes an XML-special character in the display name/email/url values.", () => {
+            const xml = buildOutlookSuccessXml({
+                emailAddress: "a+tag@example.com",
+                displayName: `Bob & "The Builder"`,
+                mapiUrl: "https://mail.example.com/mapi/emsmdb?x=1&y=2",
+            });
+            expect(xml).toContain("<AutoDiscoverSMTPAddress>a+tag@example.com</AutoDiscoverSMTPAddress>");
+            expect(xml).toContain("Bob &amp; &quot;The Builder&quot;");
+            expect(xml).toContain("?x=1&amp;y=2");
         });
     });
 });

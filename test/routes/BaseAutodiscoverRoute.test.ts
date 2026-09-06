@@ -2,11 +2,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-// Isolated unit tests for BaseAutodiscoverRoute, reserved for the defensive `!this.mailboxRepo` guard branches
-// a real wired server can never exercise (DI always populates the repo via `@Init` before a request can reach
-// a route) - the same rationale test/routes/BaseEasRoute.test.ts already uses for its own identical guard.
-// Every other behavior (email extraction, mailbox resolution, both success/error response shapes) is exercised
-// via real HTTP+DB requests in test/routes/mongo/AutodiscoverRoute.test.ts (and its sql/ counterpart).
+// Isolated unit tests for BaseAutodiscoverRoute, reserved for defensive guard branches a real wired server can
+// never exercise: the `!this.mailboxRepo` guards (DI always populates the repo via `@Init` before a request can
+// reach a route - the same rationale test/routes/BaseEasRoute.test.ts already uses for its own identical guard)
+// and `pox()`'s `req.rawBody ? ... : ""` fallback (a real HTTP transport always supplies at least an empty,
+// still-truthy `Buffer` for a body-eligible request, so the falsy/`undefined` branch is unreachable over real
+// HTTP - only a direct unit call can construct a request object without a `rawBody` at all). Every other
+// behavior (email extraction, mailbox resolution, both success/error response shapes, schema branching) is
+// exercised via real HTTP+DB requests in test/routes/mongo/AutodiscoverRoute.test.ts (and its sql/ counterpart).
 import config from "../config.js";
 import { ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
@@ -15,6 +18,7 @@ import { BaseAutodiscoverRoute } from "../../src/autodiscover/BaseAutodiscoverRo
 class TestAutodiscoverRoute extends BaseAutodiscoverRoute<any> {
     protected mailboxClass: any = { name: "TestMailbox" };
     protected readonly easUrl = "https://mail.example.com/Microsoft-Server-ActiveSync";
+    protected readonly mapiUrl = "https://mail.example.com/mapi/emsmdb";
 }
 
 function makeRes(): any {
@@ -44,6 +48,19 @@ describe("BaseAutodiscoverRoute Tests (guard clauses only)", () => {
         await route.pox({ rawBody: undefined } as any, res);
 
         expect(res.status).toHaveBeenCalledWith(500);
+        expect(res.send).toHaveBeenCalledWith();
+    });
+
+    it("pox() sends a 400 when req.rawBody is undefined (falls back to an empty body string).", async () => {
+        const route = objectFactory.newInstance<TestAutodiscoverRoute>(TestAutodiscoverRoute, {
+            initialize: false,
+        });
+        (route as any).mailboxRepo = { find: vi.fn().mockResolvedValue([]) };
+        const res = makeRes();
+
+        await route.pox({ rawBody: undefined } as any, res);
+
+        expect(res.status).toHaveBeenCalledWith(400);
         expect(res.send).toHaveBeenCalledWith();
     });
 

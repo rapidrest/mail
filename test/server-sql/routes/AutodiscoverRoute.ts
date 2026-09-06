@@ -5,4 +5,5 @@ const { Route } = RouteDecorators;
 @Route("/sql/autodiscover")
 export class AutodiscoverRoute extends AutodiscoverRouteSQL {
     protected readonly easUrl = "https://mail.example.com/Microsoft-Server-ActiveSync";
+    protected readonly mapiUrl = "https://mail.example.com/mapi/emsmdb";
 }
