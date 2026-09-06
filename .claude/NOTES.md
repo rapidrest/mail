@@ -29,7 +29,7 @@ Keep entries terse — this is a reference, not a transcript.
 
 ## Session Log
 
-### 2026-09-06 — MAPI Phase 3, steps 10-13 (delete ROPs, pragmatic ICS, minimal NSPI, Autodiscover Outlook/EXCH)
+### 2026-09-06 — MAPI Phase 3, steps 10-14 (delete ROPs, pragmatic ICS, minimal NSPI, Autodiscover Outlook/EXCH, public surface) — **Phase 3 complete**
 
 - **`RecoverableRepoUtils` gap found before implementing delete ROPs**: `BaseMapiEmsmdbRoute.ts` was building
   plain `RepoUtils` (not `RecoverableRepoUtils`) for `folderRepo`/`messageRepo`/`calendarEventRepo`, so a
@@ -79,6 +79,16 @@ Keep entries terse — this is a reference, not a transcript.
   - `BaseAutodiscoverRoute` gained an abstract `mapiUrl` property (sibling to `easUrl`) and `pox()` now
     branches on `extractAcceptableResponseSchema(body)` to pick `buildOutlookSuccessXml` vs the original
     `buildPoxSuccessXml`.
+- **Step 14 (public surface) found a real pre-existing gap**: `src/mongo.ts`/`src/sql.ts` (the root
+  `@rapidrest/mail/mongo`/`/sql` aggregators) never included `./mapi/mongo.js`/`./mapi/sql.js` at all — the
+  flat `src/mapi/mongo.ts`/`sql.ts` re-export files that mirror `src/eas/mongo.ts`/`sql.ts` didn't exist yet
+  either, and `MapiNspiRouteMongo`/`SQL` were missing from `src/mapi/mongo/index.ts`/`sql/index.ts` (only
+  `MapiEmsmdbRouteMongo`/`SQL` had been added back in step 3). All fixed together; `src/mapi/index.ts` itself
+  now re-exports every backend-agnostic codec/ROP-handler/NSPI-handler class (each takes a generic
+  `RopContext`/repo argument, so none of them needed a Mongo/SQL split).
+- **Phase 3 is now fully complete** (steps 1-14). Full-suite verification (`tsc --noEmit`/`eslint`/
+  `vitest run --coverage`): 1484/1484 tests pass; the only global-threshold misses are the pre-existing
+  Phase 1/Phase 2 gaps noted below (unrelated to Phase 3, not fixed here to avoid scope creep).
 - **Full-suite coverage audit finding, not fixed in this session (out of scope for Phase 3)**: running the
   *entire* `npx vitest run --coverage` (not just the touched files) surfaces small, pre-existing statement/
   function/line gaps in several Phase 1/Phase 2 files never touched this session —
