@@ -77,6 +77,14 @@ export class MapiSessionContext extends SimpleEntity {
      * `MessageTarget.assignOrGetMid`), read back by a later `RopOpenMessage`. */
     public messageIds: Record<string, string> = {};
 
+    /** This session's `RopGetPropertyIdsFromNames` mapping table (`[MS-OXCPRPT]` §2.2.12), keyed by a JSON
+     * string encoding of the `{guid, kind, lid|name}` `PropertyName` the numeric ID was assigned to - see
+     * `NamedPropertyRegistry.ts`'s own doc comment for why a JSON string (rather than a delimiter-joined one)
+     * is the safest key shape here. A real client resolves every named property (almost every Calendar-specific
+     * one - `PidLidAppointmentStartWhole`, `PidLidBusyStatus`, `PidLidAppointmentRecur`, ...) through this table
+     * once per session before ever setting/reading it via `RopSetProperties`/`RopGetPropertiesSpecific`. */
+    public namedProperties: Record<string, number> = {};
+
     /** `mailboxUid`/`userUid` are always known at construction time (the only call site is
      * `MapiSessionManager.create()`, which resolves both up front) - required here rather than optional with
      * a same-value fallback, which would just be dead code no real caller ever takes the other branch of. */

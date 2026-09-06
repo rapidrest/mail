@@ -20,6 +20,7 @@ import { RopSetPropertiesHandler } from "../rop/RopSetPropertiesHandler.js";
 import { RopWriteStreamHandler } from "../rop/RopWriteStreamHandler.js";
 import { RopSaveChangesMessageHandler } from "../rop/RopSaveChangesMessageHandler.js";
 import { RopSubmitMessageHandler } from "../rop/RopSubmitMessageHandler.js";
+import { RopGetPropertyIdsFromNamesHandler } from "../rop/RopGetPropertyIdsFromNamesHandler.js";
 
 /**
  * SQL-backed concrete `BaseMapiEmsmdbRoute`. See `MapiEmsmdbRouteMongo.ts`'s doc comment - the same mounting
@@ -48,5 +49,6 @@ export class MapiEmsmdbRouteSQL extends BaseMapiEmsmdbRoute<MailboxSQL> {
         RopWriteStreamHandler,
         RopSaveChangesMessageHandler,
         RopSubmitMessageHandler,
+        RopGetPropertyIdsFromNamesHandler,
     ];
 }

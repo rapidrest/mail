@@ -16,7 +16,7 @@ import { FolderType, MessageImportance, RecipientType } from "../../../src/model
 import { InMemoryBlobStore, RecordingMailTransport, registerTestDoubles } from "../../testDoubles.js";
 import { cookieHeaderFrom, mapiRequest } from "../../mapi/mapiTestClient.js";
 import { BufferReader, BufferWriter } from "../../../src/mapi/codec/BufferCursor.js";
-import { decodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
+import { decodeGuid, encodeGuid } from "../../../src/mapi/codec/MapiGuid.js";
 import { PropertyType, readPropertyValue, writePropertyTag, writeTaggedPropertyValue } from "../../../src/mapi/codec/PropertyValue.js";
 import { decodeRopBuffer, encodeRopBuffer } from "../../../src/mapi/codec/RopBuffer.js";
 
@@ -749,5 +749,72 @@ describe("Route:MapiEmsmdbRouteSQL Tests", () => {
         expect(sentMessage?.recipients).toEqual([{ address: "recipient@example.com", type: RecipientType.TO }]);
         const savedRaw = await blobStore().get(sentMessage!.bodyBlobKey);
         expect(savedRaw.toString("utf-8")).toContain(bodyText);
+    });
+
+    it("Resolves named properties into stable, session-scoped numeric IDs starting at 0x8000 (RopGetPropertyIdsFromNames).", async () => {
+        const PSETID_APPOINTMENT = "00062002-0000-0000-c000-000000000046";
+        await createMailbox(owner.uid);
+        const connectResult = await connect();
+        const cookie = cookieHeaderFrom(connectResult.headers["set-cookie"]);
+
+        const logonRops = new BufferWriter();
+        logonRops.writeUInt8(0xfe);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0);
+        logonRops.writeUInt8(0x01);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt32LE(0);
+        logonRops.writeUInt16LE(0);
+        await execute(cookie, encodeRopBuffer({ ropsList: logonRops.toBuffer(), handleTable: [0xffffffff] }));
+
+        const buildRequest = function (lids: number[]): Buffer {
+            const namesWriter = new BufferWriter();
+            for (const lid of lids) {
+                namesWriter.writeUInt8(0x00); // Kind - LID
+                namesWriter.writeBytes(encodeGuid(PSETID_APPOINTMENT));
+                namesWriter.writeUInt32LE(lid);
+            }
+            const namesBytes = namesWriter.toBuffer();
+            const writer = new BufferWriter();
+            writer.writeUInt8(0x56);
+            writer.writeUInt8(0); // LogonId
+            writer.writeUInt8(0); // InputHandleIndex (logon)
+            writer.writeUInt8(0x02); // Flags - assign new IDs
+            writer.writeUInt16LE(lids.length);
+            writer.writeBytes(namesBytes);
+            return writer.toBuffer();
+        };
+
+        // Arbitrary LIDs within PSETID_Appointment - this test only exercises the ROP's own mechanics
+        // (resolving a PropertyName to a stable session-scoped numeric ID), not any specific real Calendar
+        // property's exact LID value.
+        const result = await execute(cookie, encodeRopBuffer({ ropsList: buildRequest([0x8208, 0x820d]), handleTable: [0xffffffff] }));
+        const reader = new BufferReader(result.body);
+        reader.readUInt32LE();
+        reader.readUInt32LE();
+        reader.readUInt32LE();
+        const { ropsList } = decodeRopBuffer(reader.readBytes(reader.readUInt32LE()));
+        const ropsReader = new BufferReader(ropsList);
+        expect(ropsReader.readUInt8()).toBe(0x56);
+        expect(ropsReader.readUInt8()).toBe(0);
+        expect(ropsReader.readUInt32LE()).toBe(0);
+        expect(ropsReader.readUInt16LE()).toBe(2);
+        const id1 = ropsReader.readUInt16LE();
+        const id2 = ropsReader.readUInt16LE();
+        expect(id1).toBe(0x8000);
+        expect(id2).toBe(0x8001);
+
+        const secondResult = await execute(cookie, encodeRopBuffer({ ropsList: buildRequest([0x8208]), handleTable: [0xffffffff] }));
+        const secondReader = new BufferReader(secondResult.body);
+        secondReader.readUInt32LE();
+        secondReader.readUInt32LE();
+        secondReader.readUInt32LE();
+        const { ropsList: secondRopsList } = decodeRopBuffer(secondReader.readBytes(secondReader.readUInt32LE()));
+        const secondRopsReader = new BufferReader(secondRopsList);
+        secondRopsReader.readUInt8();
+        secondRopsReader.readUInt8();
+        secondRopsReader.readUInt32LE();
+        secondRopsReader.readUInt16LE();
+        expect(secondRopsReader.readUInt16LE()).toBe(id1);
     });
 });
