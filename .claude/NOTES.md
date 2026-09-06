@@ -22,6 +22,11 @@ Keep entries terse — this is a reference, not a transcript.
 
 - **Commit discipline.** Don't `git commit` unless explicitly asked, even after a full
   review-and-fix cycle with passing tests. Leave changes staged/unstaged and say so.
+- **Commit message style: concise, one line per task/bug/feature — no verbose prose.** A commit
+  message is a title line, plus (if the commit spans more than one discrete task/bug/feature) a
+  short list of one-line bullets, one per item. Never a paragraph explaining what was done or
+  why for any single item — that belongs in the diff/code comments/NOTES.md, not the commit
+  message. This mirrors JP's standing convention across his other repos.
 
 ## Session Log
 
@@ -90,3 +95,30 @@ seeing a shared mailbox in their own "list my mailboxes" call, and a true ownerl
 - Both fixed pre-existing tests (`test/models/{mongo,sql}.test.ts`'s "falls back to class defaults" checks)
   now assert `ownerUserUid` is `undefined` by default, not `""` — this is the correct new default (a
   freshly-constructed `Mailbox` with no data is exactly the ownerless case), not a regression to paper over.
+
+### 2026-09-06 — `BaseMessageRoute.content()`: fetch a message's body (found missing while building `mail-server`'s webmail reading pane)
+
+- **Real gap, not a style choice**: `BaseMessageRoute` had `send()` (compose→relay) but no endpoint at all to
+  fetch a message's actual body content — `findById` (from `BaseScopedChildRoute`) only ever returns the
+  `Message` record itself, which carries `bodyBlobKey`/`sanitizedHtmlBlobKey` as opaque blob-store keys, not
+  content. A webmail reading pane (or any other client) had no way to render a message body at all. Found
+  while implementing `mail-server`'s `apps/www` inbox reading pane — its own NOTES.md Phase 3 entry has the
+  consumer side.
+- **Fix**: `GET /:id/content`, mirroring `BaseAttachmentRoute.download()`'s exact shape (same 404-on-missing-
+  or-no-permission pattern, checked against `aclUtils.hasPermission(user, message.folderUid, ACLAction.READ)`
+  — the same permission `findById` implicitly uses). Serves `sanitizedHtmlBlobKey` as `text/html` when the
+  message has one (the post-`ScanPipeline` sanitized body — safe to render directly), otherwise falls back to
+  `bodyPreview` as `text/plain`. **Deliberately never serves `bodyBlobKey`'s raw MIME** — that's never
+  sanitized, and the doc comment says so explicitly, so a future change doesn't "helpfully" wire it in as a
+  fallback.
+- Tests: mongo+sql integration coverage (sanitized-HTML path, plain-text fallback, 403/404 — actually asserts
+  404 for both permission-denied and not-found, matching `BaseAttachmentRoute.download`'s own choice not to
+  distinguish the two) plus the usual `BaseMessageRoute.test.ts` guard-clause unit test
+  (`!repoUtils`/`!blobStore` → `INTERNAL_ERROR`, the one thing a real wired server can never trigger).
+- Verification: `yarn tsc --noEmit`/`yarn lint`/full `yarn vitest run` all clean (1207/1283, 76 intentionally
+  skipped) except one confirmed-transient `EasRoute.test.ts` `MongoNetworkError: ECONNRESET` under the full
+  suite's load — reproduced passing 76/76 in isolation immediately after, not a real regression, not
+  something this change touches (EAS code wasn't modified).
+- Per this repo's own standing rule, `version` in `package.json` was **not** bumped — `mail-server` needs a
+  fresh `yarn patch`/`yarn patch-commit` (see that repo's NOTES.md) to pick this up locally until JP
+  publishes a real release.

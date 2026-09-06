@@ -251,6 +251,57 @@ describe("Route:MessageSQL Tests", () => {
         expect(result.status).toBe(404);
     });
 
+    it("Owner can fetch a message's sanitized HTML content once it has one.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid, FolderType.INBOX);
+        const blobStore: InMemoryBlobStore = objectFactory.getInstance<InMemoryBlobStore>("BlobStore")!;
+        const sanitizedHtmlBlobKey = `bodies/${uuid.v4()}.html`;
+        await blobStore.put(sanitizedHtmlBlobKey, Buffer.from("<p>Hello</p>"));
+        const message = await createMessage(mailbox.uid, folder.uid, { sanitizedHtmlBlobKey });
+
+        const result = await request(server.getApplication())
+            .get(`${baseUrl}/${message.uid}/content`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBe(200);
+        expect(result.headers["content-type"]).toContain("text/html");
+        expect(result.text).toBe("<p>Hello</p>");
+    });
+
+    it("Falls back to the plain-text preview for a message with no sanitized HTML body.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid, FolderType.INBOX);
+        const message = await createMessage(mailbox.uid, folder.uid, { bodyPreview: "Just plain text" });
+
+        const result = await request(server.getApplication())
+            .get(`${baseUrl}/${message.uid}/content`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBe(200);
+        expect(result.headers["content-type"]).toContain("text/plain");
+        expect(result.text).toBe("Just plain text");
+    });
+
+    it("A different user cannot fetch content for a message they don't have access to.", async () => {
+        const mailbox = await createMailbox(owner.uid);
+        const folder = await createFolder(mailbox.uid, FolderType.INBOX);
+        const message = await createMessage(mailbox.uid, folder.uid);
+
+        const result = await request(server.getApplication())
+            .get(`${baseUrl}/${message.uid}/content`)
+            .set("Authorization", "jwt " + otherUserToken);
+
+        expect(result.status).toBe(404);
+    });
+
+    it("Fetching content for a nonexistent message returns 404.", async () => {
+        const result = await request(server.getApplication())
+            .get(`${baseUrl}/${uuid.v4()}/content`)
+            .set("Authorization", "jwt " + ownerToken);
+
+        expect(result.status).toBe(404);
+    });
+
     it("Owner can list messages in a folder they have access to.", async () => {
         const mailbox = await createMailbox(owner.uid);
         const folder = await createFolder(mailbox.uid, FolderType.INBOX);

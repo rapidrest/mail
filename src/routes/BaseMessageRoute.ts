@@ -9,6 +9,7 @@ import {
     ApiErrors,
     DocDecorators,
     HttpRequest,
+    HttpResponse,
     RouteDecorators,
 } from "@rapidrest/service-core";
 import { BlobStore } from "../blob/BlobStore.js";
@@ -20,7 +21,7 @@ import { BaseScopedChildRoute } from "./BaseScopedChildRoute.js";
 import { FolderType, Message, MessageFlags } from "../models/types.js";
 const { Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
-const { Param, Post, Request, User: AuthUser } = RouteDecorators;
+const { Get, Param, Post, Request, Response, User: AuthUser } = RouteDecorators;
 
 /**
  * Extends `BaseScopedChildRoute` (scoped by `folderUid` — see the architecture note on `Message.mailboxUid`)
@@ -120,5 +121,37 @@ export abstract class BaseMessageRoute<T extends Message> extends BaseScopedChil
             message,
             { user, ignoreACL: true },
         );
+    }
+
+    @Summary("Get message content")
+    @Description(
+        "Streams the message's sanitized HTML body (post-`ScanPipeline`, safe to render directly) if one " +
+            "exists, otherwise falls back to its plain-text preview. Never serves `bodyBlobKey`'s raw MIME " +
+            "source directly — that content is never sanitized.",
+    )
+    @Get("/:id/content")
+    public async content(
+        @Param("id") id: string,
+        @Response res: HttpResponse,
+        @AuthUser user?: JWTUser,
+    ): Promise<void> {
+        if (!this.repoUtils || !this.blobStore) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+
+        const message: T | undefined = await this.repoUtils.findOne(id, { ignoreACL: true });
+        if (!message || !(await this.aclUtils!.hasPermission(user, message.folderUid, ACLAction.READ))) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+
+        if (message.sanitizedHtmlBlobKey) {
+            const html: Buffer = await this.blobStore.get(message.sanitizedHtmlBlobKey);
+            res.setHeader("content-type", "text/html; charset=utf-8");
+            res.send(html);
+            return;
+        }
+
+        res.setHeader("content-type", "text/plain; charset=utf-8");
+        res.send(Buffer.from(message.bodyPreview ?? "", "utf-8"));
     }
 }
