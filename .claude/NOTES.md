@@ -29,6 +29,46 @@ Keep entries terse — this is a reference, not a transcript.
 
 ## Session Log
 
+### 2026-09-06 — MAPI Phase 3, Calendar sub-phase (steps 9a-9f)
+
+- **New Outlook / Graph API reality check** (settled, don't re-litigate): researched whether to pivot MAPI
+  work toward Microsoft Graph API instead, since "New Outlook"/mobile/web Outlook don't speak MAPI at all.
+  Finding: Graph API is Microsoft's own cloud service, not an implementable protocol a third-party server can
+  serve stock clients over — New Outlook currently has zero on-prem Exchange connectivity via *any* protocol.
+  MAPI/HTTP itself is current (not deprecated), just narrow in scope (classic Windows desktop Outlook only).
+  Decision: continue MAPI as planned; EAS already covers mobile/iOS Mail; a future IMAP/SMTP phase would be
+  the way to reach New Outlook, not a Graph API implementation.
+- **Named properties were a real, missing ROP** — almost every Appointment property (start/end, location,
+  busy status, recurrence, reminder) is a *named* property (`PidLid*`), not a fixed-numeric `PidTag*`. A
+  client must resolve each one via `RopGetPropertyIdsFromNames` first. This wasn't in the original Phase 3
+  plan and was caught by research before writing Calendar code, not after — worth remembering as the shape of
+  gap to watch for before starting a new ROP area (check MS-OXPROPS for `PtypInteger32`-adjacent surprises).
+  Session-scoped mapping lives in `NamedPropertyRegistry.ts` (`MapiSessionContext.namedProperties`), same
+  linear-registry pattern as `FolderTarget.assignOrGetFid`/`MessageTarget.assignOrGetMid`.
+- **Calendar named-property GUID/LID table** (`src/mapi/rop/CalendarNamedProperties.ts`) — confirmed one-by-one
+  against live MS-OXPROPS pages this session (not invented/recalled from memory), shared by both the read side
+  (`PropertyResolvers.calendarEventValueFor`) and write side (`RopSaveChangesMessageHandler`'s decode). If a
+  future session needs another Calendar property, look it up fresh the same way rather than trusting recall.
+- **Meeting invites use nodemailer's `MailComposer` `icalEvent` option** (`{method: "REQUEST", content: ics}`)
+  — produces the correct dual form (a `text/calendar; method=REQUEST` MIME alternative *and* an `.ics`
+  attachment) automatically. No need to hand-build multipart MIME for calendar invites; only the ICS text
+  itself needs hand-building.
+- **`PidLidGlobalObjectId` needs no persisted correlation field** — since this server always generates the
+  invite's `GlobalObjectId` itself, embedding `CalendarEvent.icalUid` directly in the structure's own
+  `Data` bytes (`GlobalObjectId.ts`) makes decoding a real client's meeting-response payload back to the
+  original event a direct lookup, not a new schema field.
+- **Two real bugs found via testing, not review** (both now fixed, both worth the reminder that MAPI's own
+  target-string/session conventions are easy to get subtly wrong): `CalendarEventTarget`'s organizer
+  resolution used `event?.organizer.address` (chains on `event`, not `.organizer` — crashes if `organizer` is
+  ever missing); a fresh appointment's `folderUid` was persisted as the raw `"folder:<uid>"` session *target
+  string* (`MapiObjectHandle.draftFolderUid`'s actual format) instead of the bare `Folder.uid`.
+- **Commit message rewrite**: at JP's request, rewrote all 18 locally-unpushed commit messages (everything
+  ahead of `origin/main`'s `0.2.0` tag) to match the tightened commit-message rule above (plain one-line-per-
+  item, no prose paragraphs) via `git filter-branch --msg-filter`, verified byte-identical trees before/after.
+  Already-published history (at/before `c44a714`) was deliberately left untouched — rewriting *that* would
+  need a force-push and could break other clones/`mail-server`'s `yarn patch` consumption; that's a
+  materially bigger, separate decision from cleaning up local-only history.
+
 ### 2026-09-05 — Shared mailbox support (`Mailbox.ownerUserUid` optional, ACL-driven `find`/`count`)
 
 Driven by `mail-server`'s implementation plan (exposing this library's REST surface via a webmail client +
