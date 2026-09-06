@@ -23,9 +23,8 @@ Keep entries terse — this is a reference, not a transcript.
 - **Commit discipline.** Don't `git commit` unless explicitly asked, even after a full
   review-and-fix cycle with passing tests. Leave changes staged/unstaged and say so.
 - **Commit message style: concise, one line per task/bug/feature — no verbose prose.** A commit
-  message is a title line, plus (if the commit spans more than one discrete task/bug/feature) a
-  short list of one-line bullets, one per item. Never a paragraph explaining what was done or
-  why for any single item — that belongs in the diff/code comments/NOTES.md, not the commit
+  message is a short list of one-line bullets, one per item. Never a paragraph explaining what was
+  done or why for any single item — that belongs in the diff/code comments/NOTES.md, not the commit
   message. This mirrors JP's standing convention across his other repos.
 
 ## Session Log
