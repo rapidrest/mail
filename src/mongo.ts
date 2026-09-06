@@ -7,3 +7,4 @@ export * from "./routes/mongo.js";
 export * from "./jobs/mongo.js";
 export * from "./eas/mongo.js";
 export * from "./autodiscover/mongo.js";
+export * from "./mapi/mongo.js";

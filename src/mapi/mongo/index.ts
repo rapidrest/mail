@@ -3,3 +3,4 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 export * from "./MapiEmsmdbRouteMongo.js";
+export * from "./MapiNspiRouteMongo.js";

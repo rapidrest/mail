@@ -2,9 +2,4 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-export * from "./models/sql.js";
-export * from "./routes/sql.js";
-export * from "./jobs/sql.js";
-export * from "./eas/sql.js";
-export * from "./autodiscover/sql.js";
-export * from "./mapi/sql.js";
+export * from "./sql/index.js";
