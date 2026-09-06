@@ -32,9 +32,15 @@ const SESSION_TTL_SECONDS = 15 * 60;
  * stores accumulated `RopWriteStream` bytes as base64 rather than a raw `Buffer` for the same reason `Date`
  * fields elsewhere in this class are stored as ISO strings: `RedisCache`'s Redis-backed path round-trips
  * everything through `JSON.stringify`/`JSON.parse`, which cannot represent a `Buffer` (or a `bigint`, which is
- * why no property value is ever stored in its native decoded MAPI type here) losslessly. */
+ * why no property value is ever stored in its native decoded MAPI type here) losslessly.
+ *
+ * A `"fastTransfer"` handle (`RopFastTransferSourceCopyTo`/`CopyProperties`'s output handle) carries the
+ * entire pre-built FastTransfer stream eagerly (`transferBufferBase64`, same base64-for-`RedisCache` reasoning
+ * as `writeBufferBase64`) - this pragmatic subset builds the whole stream up front rather than truly
+ * incrementally, since a real client only ever pages it out via `RopFastTransferSourceGetBuffer`'s own
+ * `transferPosition` cursor into that already-complete buffer, see `FastTransferStream.ts`'s own doc comment. */
 export interface MapiObjectHandle {
-    type: "logon" | "folder" | "message" | "table" | "stream";
+    type: "logon" | "folder" | "message" | "table" | "stream" | "fastTransfer";
     entityUid: string;
     rows?: string[];
     columns?: { propertyId: number; propertyType: number }[];
@@ -46,6 +52,8 @@ export interface MapiObjectHandle {
     draftProperties?: Record<string, string>;
     writeTargetHandleIndex?: number;
     writeBufferBase64?: string;
+    transferBufferBase64?: string;
+    transferPosition?: number;
 }
 
 /**

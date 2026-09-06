@@ -23,6 +23,9 @@ import { RopSubmitMessageHandler } from "../rop/RopSubmitMessageHandler.js";
 import { RopGetPropertyIdsFromNamesHandler } from "../rop/RopGetPropertyIdsFromNamesHandler.js";
 import { RopDeleteMessagesHandler } from "../rop/RopDeleteMessagesHandler.js";
 import { RopDeleteFolderHandler } from "../rop/RopDeleteFolderHandler.js";
+import { RopFastTransferSourceCopyToHandler } from "../rop/RopFastTransferSourceCopyToHandler.js";
+import { RopFastTransferSourceCopyPropertiesHandler } from "../rop/RopFastTransferSourceCopyPropertiesHandler.js";
+import { RopFastTransferSourceGetBufferHandler } from "../rop/RopFastTransferSourceGetBufferHandler.js";
 
 /**
  * SQL-backed concrete `BaseMapiEmsmdbRoute`. See `MapiEmsmdbRouteMongo.ts`'s doc comment - the same mounting
@@ -55,5 +58,8 @@ export class MapiEmsmdbRouteSQL extends BaseMapiEmsmdbRoute<MailboxSQL> {
         RopGetPropertyIdsFromNamesHandler,
         RopDeleteMessagesHandler,
         RopDeleteFolderHandler,
+        RopFastTransferSourceCopyToHandler,
+        RopFastTransferSourceCopyPropertiesHandler,
+        RopFastTransferSourceGetBufferHandler,
     ];
 }
