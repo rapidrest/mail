@@ -28,17 +28,20 @@ describe("RopGetContentsTableHandler Tests", () => {
                 { uid: "msg2", folderUid: "top1" },
             ]),
         };
+        const folderRepo = { findOne: vi.fn().mockResolvedValue({ uid: "top1", type: "inbox" }) };
         const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
         session.handles[5] = { type: "folder", entityUid: "folder:top1" };
         const context: RopContext = {
             mailboxUid: "mailbox-1",
             userUid: "user-1",
             session,
-            folderRepo: {} as any,
+            folderRepo: folderRepo as any,
             messageRepo: messageRepo as any,
+            calendarEventRepo: {} as any,
             mailboxRepo: {} as any,
             folderClass: {} as any,
             messageClass: {} as any,
+            calendarEventClass: {} as any,
             scanPipeline: {} as any,
             mailTransport: {} as any,
             blobStore: {} as any,
@@ -60,7 +63,44 @@ describe("RopGetContentsTableHandler Tests", () => {
             rows: ["message:msg1", "message:msg2"],
             cursor: 0,
         });
+        expect(folderRepo.findOne).toHaveBeenCalledWith("top1", { ignoreACL: true });
         expect(messageRepo.find).toHaveBeenCalledWith({ folderUid: "top1" }, { ignoreACL: true });
+    });
+
+    it("Creates a table handle listing a CALENDAR folder's events, resolved via the calendar event repo instead of the message repo.", async () => {
+        const messageRepo = { find: vi.fn() };
+        const calendarEventRepo = {
+            find: vi.fn().mockResolvedValue([
+                { uid: "evt1", folderUid: "cal1" },
+                { uid: "evt2", folderUid: "cal1" },
+            ]),
+        };
+        const folderRepo = { findOne: vi.fn().mockResolvedValue({ uid: "cal1", type: "calendar" }) };
+        const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
+        session.handles[5] = { type: "folder", entityUid: "folder:cal1" };
+        const context: RopContext = {
+            mailboxUid: "mailbox-1",
+            userUid: "user-1",
+            session,
+            folderRepo: folderRepo as any,
+            messageRepo: messageRepo as any,
+            calendarEventRepo: calendarEventRepo as any,
+            mailboxRepo: {} as any,
+            folderClass: {} as any,
+            messageClass: {} as any,
+            calendarEventClass: {} as any,
+            scanPipeline: {} as any,
+            mailTransport: {} as any,
+            blobStore: {} as any,
+        };
+
+        const handler = new RopGetContentsTableHandler();
+        const writer = new BufferWriter();
+        await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+        expect(session.handles[6]?.rows).toEqual(["calendarEvent:evt1", "calendarEvent:evt2"]);
+        expect(calendarEventRepo.find).toHaveBeenCalledWith({ folderUid: "cal1" }, { ignoreACL: true });
+        expect(messageRepo.find).not.toHaveBeenCalled();
     });
 
     it("Returns an empty table for a virtual folder, without querying the message repo.", async () => {
@@ -73,9 +113,11 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: messageRepo as any,
+            calendarEventRepo: {} as any,
             mailboxRepo: {} as any,
             folderClass: {} as any,
             messageClass: {} as any,
+            calendarEventClass: {} as any,
             scanPipeline: {} as any,
             mailTransport: {} as any,
             blobStore: {} as any,
@@ -97,9 +139,11 @@ describe("RopGetContentsTableHandler Tests", () => {
             session,
             folderRepo: {} as any,
             messageRepo: {} as any,
+            calendarEventRepo: {} as any,
             mailboxRepo: {} as any,
             folderClass: {} as any,
             messageClass: {} as any,
+            calendarEventClass: {} as any,
             scanPipeline: {} as any,
             mailTransport: {} as any,
             blobStore: {} as any,

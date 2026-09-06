@@ -72,6 +72,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     protected abstract mailboxClass: any;
     protected abstract folderClass: any;
     protected abstract messageClass: any;
+    protected abstract calendarEventClass: any;
 
     /** ROP handler classes to instantiate (one each) in `@Init`, keyed by their own `ropId`. Empty until a
      * concrete `RopHandler` lands - every ROP is then simply left unprocessed (see `RopDispatcher`'s own doc
@@ -84,6 +85,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
     private mailboxRepo?: RepoUtils<M>;
     private folderRepo?: RepoUtils<Folder>;
     private messageRepo?: RepoUtils<any>;
+    private calendarEventRepo?: RepoUtils<any>;
     private sessionManager?: MapiSessionManager;
     private readonly ropHandlers = new Map<number, RopHandler>();
 
@@ -113,6 +115,10 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             name: this.messageClass.name,
             args: [this.messageClass],
         });
+        this.calendarEventRepo = await this._objectFactory!.newInstance(RepoUtils, {
+            name: this.calendarEventClass.name,
+            args: [this.calendarEventClass],
+        });
         this.sessionManager = await this._objectFactory!.newInstance(MapiSessionManager);
         for (const HandlerClass of this.ropHandlerClasses) {
             const handler: RopHandler = await this._objectFactory!.newInstance(HandlerClass);
@@ -131,6 +137,7 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             !this.mailboxRepo ||
             !this.folderRepo ||
             !this.messageRepo ||
+            !this.calendarEventRepo ||
             !this.sessionManager ||
             !this.blobStore ||
             !this.scanPipeline ||
@@ -245,8 +252,10 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             mailboxRepo: this.mailboxRepo!,
             folderRepo: this.folderRepo!,
             messageRepo: this.messageRepo!,
+            calendarEventRepo: this.calendarEventRepo!,
             folderClass: this.folderClass,
             messageClass: this.messageClass,
+            calendarEventClass: this.calendarEventClass,
             blobStore: this.blobStore!,
             scanPipeline: this.scanPipeline!,
             mailTransport: this.mailTransport!,

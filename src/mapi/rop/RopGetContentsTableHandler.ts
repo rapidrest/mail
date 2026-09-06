@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { Folder, FolderType } from "../../models/types.js";
 import type { BufferReader, BufferWriter } from "../codec/BufferCursor.js";
+import { resolveFolderCalendarEvents } from "./CalendarEventTarget.js";
 import { resolveFolderMessages } from "./MessageTarget.js";
 import type { RopContext, RopHandler } from "./RopHandler.js";
 
@@ -26,6 +28,11 @@ const ERROR_INVALID_OBJECT = 0x80070005;
  * folders (`RopLogonHandler`'s own doc comment) have no real backing row to hold messages under, so opening a
  * contents table on one always yields an empty table rather than an error.
  *
+ * **Calendar folders** (`Folder.type === FolderType.CALENDAR`) list `"calendarEvent:<uid>"` rows resolved via
+ * `calendarEventRepo` instead of `"message:<uid>"` rows - a single table handle only ever holds one kind of
+ * row, decided once here by checking the folder's own `type`, exactly the same "resolve by target-string
+ * prefix downstream" design `MessageTarget`/`FolderTarget` already use for their own rows.
+ *
  * @author Jean-Philippe Steinmetz
  */
 export class RopGetContentsTableHandler implements RopHandler {
@@ -46,12 +53,20 @@ export class RopGetContentsTableHandler implements RopHandler {
         }
 
         const rows: string[] = folderHandle.entityUid.startsWith("folder:")
-            ? await resolveFolderMessages(folderHandle.entityUid.slice("folder:".length), context.messageRepo)
+            ? await this.resolveRows(folderHandle.entityUid.slice("folder:".length), context)
             : [];
         context.session.handles[outputHandleIndex] = { type: "table", entityUid: folderHandle.entityUid, rows, cursor: 0 };
 
         writer.writeUInt8(ROP_ID_GET_CONTENTS_TABLE);
         writer.writeUInt8(outputHandleIndex);
         writer.writeUInt32LE(0); // ReturnValue - success
+    }
+
+    private async resolveRows(folderUid: string, context: RopContext): Promise<string[]> {
+        const folder: Folder | undefined = await context.folderRepo.findOne(folderUid, { ignoreACL: true });
+        if (folder?.type === FolderType.CALENDAR) {
+            return resolveFolderCalendarEvents(folderUid, context.calendarEventRepo);
+        }
+        return resolveFolderMessages(folderUid, context.messageRepo);
     }
 }

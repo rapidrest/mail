@@ -34,8 +34,10 @@ export interface RopContext {
     mailboxRepo: RepoUtils<any>;
     folderRepo: RepoUtils<any>;
     messageRepo: RepoUtils<any>;
+    calendarEventRepo: RepoUtils<any>;
     folderClass: any;
     messageClass: any;
+    calendarEventClass: any;
     blobStore: BlobStore;
     scanPipeline: ScanPipeline;
     mailTransport: any;

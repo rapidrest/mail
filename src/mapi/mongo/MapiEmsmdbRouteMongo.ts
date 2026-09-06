@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { FolderMongo, MailboxMongo, MessageMongo } from "../../mongo.js";
+import { CalendarEventMongo, FolderMongo, MailboxMongo, MessageMongo } from "../../mongo.js";
 import { BaseMapiEmsmdbRoute } from "../BaseMapiEmsmdbRoute.js";
 import { RopLogonHandler } from "../rop/RopLogonHandler.js";
 import { RopReleaseHandler } from "../rop/RopReleaseHandler.js";
@@ -33,6 +33,7 @@ export class MapiEmsmdbRouteMongo extends BaseMapiEmsmdbRoute<MailboxMongo> {
     protected mailboxClass: any = MailboxMongo;
     protected folderClass: any = FolderMongo;
     protected messageClass: any = MessageMongo;
+    protected calendarEventClass: any = CalendarEventMongo;
     protected ropHandlerClasses: any[] = [
         RopLogonHandler,
         RopReleaseHandler,

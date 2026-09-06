@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import type { BufferReader, BufferWriter } from "../codec/BufferCursor.js";
 import { writeTypedString } from "../codec/TypedString.js";
+import { resolveCalendarEventInfo } from "./CalendarEventTarget.js";
 import { resolveMessageInfo } from "./MessageTarget.js";
 import type { RopContext, RopHandler } from "./RopHandler.js";
 
@@ -25,11 +26,14 @@ const ERROR_NOT_FOUND = 0x8004010f;
  * redundancy. `OpenModeFlags` is likewise decoded but not honored - this pragmatic subset only ever opens a
  * message for reading (no `RopSetProperties`/`RopSaveChangesMessage` write-back support yet).
  *
- * **Pragmatic success response**: `HasNamedProperties` is always `false` (no named-property support), the
- * `SubjectPrefix`/`NormalizedSubject` `TypedString`s are "no prefix" + the message's plain `subject` (this data
- * model has no separate prefix/normalized-subject split the way real Exchange does), and the recipient table
- * (`RecipientCount`/`ColumnCount`/`RecipientColumns`/`RowCount`/`RecipientRows`) is always empty - reading a
- * message's `To`/`Cc` list is a documented gap in this pass, not silently wrong data.
+ * **Pragmatic success response**: `HasNamedProperties` is always `false` - a conservative hint value only, not
+ * a claim that named properties are unsupported (`RopGetPropertyIdsFromNames`/`PropertyResolvers.ts` do resolve
+ * them for a subsequently-opened Calendar item; a real client calls `RopGetPropertyIdsFromNames` unconditionally
+ * for a known Calendar message class regardless of this flag, so leaving it `false` doesn't block that path).
+ * The `SubjectPrefix`/`NormalizedSubject` `TypedString`s are "no prefix" + the item's plain subject/title (this
+ * data model has no separate prefix/normalized-subject split the way real Exchange does), and the recipient
+ * table (`RecipientCount`/`ColumnCount`/`RecipientColumns`/`RowCount`/`RecipientRows`) is always empty - reading
+ * a message's `To`/`Cc` list is a documented gap in this pass, not silently wrong data.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -54,15 +58,19 @@ export class RopOpenMessageHandler implements RopHandler {
             return;
         }
 
-        const info = await resolveMessageInfo(target, context.messageRepo);
+        // A calendar item's "subject" is its title (PidTagSubject, the same tag a Message uses) - see
+        // CalendarEventTarget.ts's own doc comment for why no separate MID-registry mechanism is needed here.
+        const subject = target.startsWith("calendarEvent:")
+            ? (await resolveCalendarEventInfo(target, context.calendarEventRepo)).title
+            : (await resolveMessageInfo(target, context.messageRepo)).subject;
         context.session.handles[outputHandleIndex] = { type: "message", entityUid: target };
 
         writer.writeUInt8(ROP_ID_OPEN_MESSAGE);
         writer.writeUInt8(outputHandleIndex);
         writer.writeUInt32LE(0); // ReturnValue - success
-        writer.writeUInt8(0); // HasNamedProperties - no named-property support
+        writer.writeUInt8(0); // HasNamedProperties - conservative fixed value, see class doc comment
         writeTypedString(writer, undefined); // SubjectPrefix - no prefix/normalized-subject split in this data model
-        writeTypedString(writer, info.subject); // NormalizedSubject
+        writeTypedString(writer, subject); // NormalizedSubject
         writer.writeUInt16LE(0); // RecipientCount - reading recipients is a documented gap, see class doc comment
         writer.writeUInt16LE(0); // ColumnCount
         writer.writeUInt8(0); // RowCount

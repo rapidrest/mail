@@ -31,7 +31,21 @@ function buildRequest({
 function makeContext(messageIds: Record<string, string>, messageRepo: any = {}): RopContext {
     const session = new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" });
     session.messageIds = messageIds;
-    return { mailboxUid: "mailbox-1", userUid: "user-1", session, folderRepo: {} as any, messageRepo, mailboxRepo: {} as any, folderClass: {} as any, messageClass: {} as any, scanPipeline: {} as any, mailTransport: {} as any, blobStore: {} as any };
+    return {
+        mailboxUid: "mailbox-1",
+        userUid: "user-1",
+        session,
+        folderRepo: {} as any,
+        messageRepo,
+        calendarEventRepo: {} as any,
+        mailboxRepo: {} as any,
+        folderClass: {} as any,
+        messageClass: {} as any,
+        calendarEventClass: {} as any,
+        scanPipeline: {} as any,
+        mailTransport: {} as any,
+        blobStore: {} as any,
+    };
 }
 
 describe("RopOpenMessageHandler Tests", () => {
@@ -61,6 +75,26 @@ describe("RopOpenMessageHandler Tests", () => {
 
         expect(context.session.handles[5]).toEqual({ type: "message", entityUid: "message:msg1" });
         expect(messageRepo.findOne).toHaveBeenCalledWith("msg1", { ignoreACL: true });
+    });
+
+    it("Opens a known MID for a calendarEvent target, using the event's title as the subject.", async () => {
+        const context = makeContext({ "1": "calendarEvent:evt1" });
+        context.calendarEventRepo = { findOne: vi.fn().mockResolvedValue({ uid: "evt1", title: "Standup" }) } as any;
+        const handler = new RopOpenMessageHandler();
+        const writer = new BufferWriter();
+
+        await handler.handle(new BufferReader(buildRequest({ outputHandleIndex: 5, messageId: 1n })), writer, context);
+
+        const response = new BufferReader(writer.toBuffer());
+        response.readUInt8(); // RopId
+        response.readUInt8(); // OutputHandleIndex
+        expect(response.readUInt32LE()).toBe(0); // ReturnValue
+        response.readUInt8(); // HasNamedProperties
+        expect(readTypedString(response)).toBeUndefined(); // SubjectPrefix
+        expect(readTypedString(response)).toBe("Standup"); // NormalizedSubject
+
+        expect(context.session.handles[5]).toEqual({ type: "message", entityUid: "calendarEvent:evt1" });
+        expect((context.calendarEventRepo as any).findOne).toHaveBeenCalledWith("evt1", { ignoreACL: true });
     });
 
     it("Returns MAPI_E_NOT_FOUND for an unrecognized MID, without creating a handle.", async () => {
