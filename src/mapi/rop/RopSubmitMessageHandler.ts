@@ -6,8 +6,9 @@ import * as crypto from "crypto";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { findOrCreateWellKnownFolder } from "../../util/FolderUtils.js";
 import { scanAndRelay } from "../../util/MailSendUtils.js";
-import { FolderType, MessageImportance, RecipientType } from "../../models/types.js";
+import { FolderType, MessageImportance, RecipientType, type CalendarEvent } from "../../models/types.js";
 import type { BufferReader, BufferWriter } from "../codec/BufferCursor.js";
+import type { MapiObjectHandle } from "../MapiSessionManager.js";
 import type { RopContext, RopHandler } from "./RopHandler.js";
 
 const ROP_ID_SUBMIT_MESSAGE = 0x32;
@@ -22,15 +23,22 @@ const ERROR_INVALID_OBJECT = 0x80070005;
 // since importing them would only save a handful of literals; see that file for the real documentation of what
 // each means.
 const PID_TAG_SUBJECT = 0x0037;
+const PID_TAG_MESSAGE_CLASS = 0x001a;
 const PID_TAG_DISPLAY_BCC = 0x0e02;
 const PID_TAG_DISPLAY_CC = 0x0e03;
 const PID_TAG_DISPLAY_TO = 0x0e04;
 const PID_TAG_BODY = 0x1000;
 
+/** `PidTagMessageClass` values starting with this prefix (`IPM.Appointment`, `IPM.Appointment.*`) route through
+ * `submitAppointment()` instead of the ordinary mail compose/send path below - see that method's own doc
+ * comment. */
+const MESSAGE_CLASS_APPOINTMENT_PREFIX = "IPM.Appointment";
+
 /** Splits a `PidTagDisplayTo`/`Cc`/`Bcc`-style string on the semicolons real Outlook separates recipients
  * with (also tolerating commas, in case a client or test harness uses that convention instead), trimming and
- * dropping empty entries. */
-function parseAddressList(value: string | undefined): string[] {
+ * dropping empty entries. Exported since `RopSaveChangesMessageHandler.ts` reads the same accumulated
+ * `PidTagDisplayTo`/`Cc` draft properties to build a Calendar item's attendee list. */
+export function parseAddressList(value: string | undefined): string[] {
     if (!value) {
         return [];
     }
@@ -67,6 +75,9 @@ function parseAddressList(value: string | undefined): string[] {
  * `SubmitFlags` (`PreprocessOnly`, ...) is decoded to advance past it correctly but not honored - this
  * pragmatic subset has no transport-agent preprocessing distinction to vary by flag.
  *
+ * **Calendar branch**: a draft whose `PidTagMessageClass` starts with `"IPM.Appointment"` is routed to
+ * `submitAppointment()` instead of the mail path below - see that method's own doc comment.
+ *
  * @author Jean-Philippe Steinmetz
  */
 export class RopSubmitMessageHandler implements RopHandler {
@@ -82,6 +93,12 @@ export class RopSubmitMessageHandler implements RopHandler {
             writer.writeUInt8(ROP_ID_SUBMIT_MESSAGE);
             writer.writeUInt8(inputHandleIndex);
             writer.writeUInt32LE(ERROR_INVALID_OBJECT);
+            return;
+        }
+
+        const messageClass = handle.draftProperties?.[String(PID_TAG_MESSAGE_CLASS)] ?? "IPM.Note";
+        if (messageClass.startsWith(MESSAGE_CLASS_APPOINTMENT_PREFIX)) {
+            await this.submitAppointment(handle, context, writer, inputHandleIndex);
             return;
         }
 
@@ -138,6 +155,97 @@ export class RopSubmitMessageHandler implements RopHandler {
         writer.writeUInt8(inputHandleIndex);
         writer.writeUInt32LE(0); // ReturnValue - success
     }
+
+    /**
+     * Submits a Calendar item. The appointment itself is already persisted (`RopSaveChangesMessageHandler`
+     * writes the real `CalendarEvent` row at Save time, unlike a mail draft, which stays purely in-session until
+     * Submit) - this method's only job is notifying attendees, if any were set (via `PidTagDisplayTo`/`Cc`,
+     * decoded into `CalendarEvent.attendees` at Save time). No attendees means no invite to send (e.g. a private,
+     * non-meeting appointment) - a well-formed success response either way, since the appointment already exists.
+     *
+     * Unlike ordinary mail, there is no separate "Sent Items copy" to create - the appointment's durable copy
+     * *is* the `CalendarEvent` row already sitting in the organizer's own Calendar folder.
+     *
+     * The invite itself is a minimal iCalendar (`RFC 5545`) `VEVENT` with `METHOD:REQUEST` (`RFC 5546`),
+     * attached via `nodemailer`'s own `MailComposer` `icalEvent` option (which produces both a `text/calendar;
+     * method=REQUEST` MIME alternative and an `.ics` attachment - the standard dual form real invite emails use)
+     * - reusing the identical `scanAndRelay()` pipeline the mail path above already calls.
+     */
+    private async submitAppointment(handle: MapiObjectHandle, context: RopContext, writer: BufferWriter, inputHandleIndex: number): Promise<void> {
+        const uid = handle.entityUid.startsWith("calendarEvent:") ? handle.entityUid.slice("calendarEvent:".length) : undefined;
+        const event: CalendarEvent | undefined = uid ? await context.calendarEventRepo.findOne(uid, { ignoreACL: true }) : undefined;
+        if (!event) {
+            writer.writeUInt8(ROP_ID_SUBMIT_MESSAGE);
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt32LE(ERROR_INVALID_OBJECT);
+            return;
+        }
+
+        if (event.attendees.length > 0) {
+            const mailbox = await context.mailboxRepo.findOne(context.mailboxUid, { ignoreACL: true });
+            const envelopeFrom: string | undefined = mailbox?.primarySmtpAddress;
+            if (envelopeFrom) {
+                const attendeeAddresses = event.attendees.map((attendee) => attendee.address);
+                const ics = buildMeetingRequestIcs(event, envelopeFrom);
+                const raw: Buffer = await new MailComposer({
+                    from: envelopeFrom,
+                    to: attendeeAddresses,
+                    subject: event.title,
+                    text: `You have been invited to: ${event.title}`,
+                    icalEvent: { method: "REQUEST", content: ics },
+                })
+                    .compile()
+                    .build();
+                await scanAndRelay(raw, envelopeFrom, attendeeAddresses, context.scanPipeline, context.mailTransport, context.blobStore);
+            }
+        }
+
+        writer.writeUInt8(ROP_ID_SUBMIT_MESSAGE);
+        writer.writeUInt8(inputHandleIndex);
+        writer.writeUInt32LE(0); // ReturnValue - success
+    }
+}
+
+/** `YYYYMMDDTHHMMSSZ` - the `RFC 5545` "form 2" (UTC) `DATE-TIME` format every field below uses. */
+function formatIcsDateUtc(date: Date): string {
+    return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+}
+
+/** Escapes the `RFC 5545` §3.3.11 `TEXT` value special characters (backslash, semicolon, comma, newline) - the
+ * only value types this minimal builder ever emits unescaped text into (`SUMMARY`/`LOCATION`). */
+function escapeIcsText(value: string): string {
+    return value.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+
+/**
+ * Builds a minimal `RFC 5545`/`RFC 5546` `METHOD:REQUEST` iCalendar document for `event`. Deliberately not a
+ * general-purpose iCalendar writer (see `AutodiscoverXml.ts`'s own doc comment for the same "hand-build just
+ * the fields this pass needs" precedent) - no `RRULE` (recurring meeting invites are a documented gap, same as
+ * this pragmatic subset's other recurrence-adjacent limitations), no line-folding at the 75-octet boundary
+ * `RFC 5545` §3.1 technically requires (every field emitted here is short enough in practice that folding would
+ * never trigger), no `VTIMEZONE` block (times are always emitted as UTC `Z`-suffixed values instead).
+ */
+function buildMeetingRequestIcs(event: CalendarEvent, organizerAddress: string): string {
+    const lines = [
+        "BEGIN:VCALENDAR",
+        "PRODID:-//RapidREST//Mail//EN",
+        "VERSION:2.0",
+        "METHOD:REQUEST",
+        "BEGIN:VEVENT",
+        `UID:${event.icalUid}`,
+        `SEQUENCE:${event.sequence}`,
+        `DTSTAMP:${formatIcsDateUtc(new Date())}`,
+        `DTSTART:${formatIcsDateUtc(event.startDate)}`,
+        `DTEND:${formatIcsDateUtc(event.endDate)}`,
+        `SUMMARY:${escapeIcsText(event.title)}`,
+        ...(event.location ? [`LOCATION:${escapeIcsText(event.location)}`] : []),
+        `ORGANIZER:mailto:${organizerAddress}`,
+        ...event.attendees.map((attendee) => `ATTENDEE;RSVP=TRUE:mailto:${attendee.address}`),
+        "STATUS:CONFIRMED",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ];
+    return lines.join("\r\n");
 }
 
 /** Prefers a `RopWriteStream`-accumulated body (the real path a large body takes) over an inline `PidTagBody`

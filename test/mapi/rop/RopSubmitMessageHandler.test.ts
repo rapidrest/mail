@@ -39,6 +39,7 @@ function makeContext(overrides: Partial<RopContext> = {}): RopContext {
         session: new MapiSessionContext({ mailboxUid: "mailbox-1", userUid: "user-1" }),
         folderRepo: { find: vi.fn().mockResolvedValue([{ uid: "sent-uid", type: FolderType.SENT_ITEMS }]) } as any,
         messageRepo: { create: vi.fn().mockResolvedValue(undefined) } as any,
+        calendarEventRepo: {} as any,
         mailboxRepo: { findOne: vi.fn().mockResolvedValue({ uid: "mailbox-1", primarySmtpAddress: "owner@example.com" }) } as any,
         folderClass: class TestFolder {
             public constructor(data: any) {
@@ -50,6 +51,7 @@ function makeContext(overrides: Partial<RopContext> = {}): RopContext {
                 Object.assign(this, data);
             }
         },
+        calendarEventClass: {} as any,
         scanPipeline: makeScanPipeline() as any,
         mailTransport: makeMailTransport() as any,
         blobStore: new InMemoryBlobStore(),
@@ -229,5 +231,156 @@ describe("RopSubmitMessageHandler Tests", () => {
         const [rawSent] = scanPipeline.run.mock.calls[0];
         const parsed = await simpleParser(rawSent as Buffer);
         expect(parsed.text?.trim()).toBe(streamText);
+    });
+
+    describe("Calendar branch (PidTagMessageClass starts with IPM.Appointment)", () => {
+        function makeCalendarEvent(overrides: Record<string, unknown> = {}) {
+            return {
+                uid: "evt1",
+                icalUid: "abc-123@mapi",
+                sequence: 0,
+                title: "Standup",
+                location: "Room 1",
+                startDate: new Date("2026-09-07T14:00:00.000Z"),
+                endDate: new Date("2026-09-07T15:00:00.000Z"),
+                attendees: [],
+                ...overrides,
+            };
+        }
+
+        it("Returns MAPI_E_INVALID_OBJECT when the handle's entityUid was never assigned a real calendarEvent (Save never succeeded as an Appointment).", async () => {
+            const context = makeContext();
+            context.session.handles[5] = { type: "message", entityUid: "", draftProperties: { "26": "IPM.Appointment" } };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            response.readUInt8();
+            response.readUInt8();
+            expect(response.readUInt32LE()).toBe(0x80070005);
+        });
+
+        it("Returns MAPI_E_INVALID_OBJECT when the referenced CalendarEvent has since vanished.", async () => {
+            const context = makeContext({ calendarEventRepo: { findOne: vi.fn().mockResolvedValue(undefined) } as any });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "calendarEvent:gone",
+                draftProperties: { "26": "IPM.Appointment" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            response.readUInt8();
+            response.readUInt8();
+            expect(response.readUInt32LE()).toBe(0x80070005);
+        });
+
+        it("Succeeds without sending anything when the event has no attendees (a private, non-meeting appointment).", async () => {
+            const event = makeCalendarEvent({ attendees: [] });
+            const context = makeContext({ calendarEventRepo: { findOne: vi.fn().mockResolvedValue(event) } as any });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "calendarEvent:evt1",
+                draftProperties: { "26": "IPM.Appointment" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            response.readUInt8();
+            response.readUInt8();
+            expect(response.readUInt32LE()).toBe(0); // ReturnValue - success
+            const scanPipeline = context.scanPipeline as any;
+            expect(scanPipeline.run).not.toHaveBeenCalled();
+        });
+
+        it("Skips sending when the mailbox has no resolvable envelope-from address, even with attendees present.", async () => {
+            const event = makeCalendarEvent({ attendees: [{ address: "attendee@example.com" }] });
+            const context = makeContext({
+                calendarEventRepo: { findOne: vi.fn().mockResolvedValue(event) } as any,
+                mailboxRepo: { findOne: vi.fn().mockResolvedValue(undefined) } as any,
+            });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "calendarEvent:evt1",
+                draftProperties: { "26": "IPM.Appointment" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            response.readUInt8();
+            response.readUInt8();
+            expect(response.readUInt32LE()).toBe(0); // still success - the appointment itself already exists
+            const scanPipeline = context.scanPipeline as any;
+            expect(scanPipeline.run).not.toHaveBeenCalled();
+        });
+
+        it("Sends a real iCalendar METHOD:REQUEST invite to every attendee, without creating a Sent Items message.", async () => {
+            const event = makeCalendarEvent({
+                attendees: [{ address: "attendee1@example.com" }, { address: "attendee2@example.com" }],
+            });
+            const context = makeContext({ calendarEventRepo: { findOne: vi.fn().mockResolvedValue(event) } as any });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "calendarEvent:evt1",
+                draftProperties: { "26": "IPM.Appointment" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            expect(response.readUInt8()).toBe(0x32);
+            expect(response.readUInt8()).toBe(5);
+            expect(response.readUInt32LE()).toBe(0); // ReturnValue - success
+
+            const scanPipeline = context.scanPipeline as any;
+            expect(scanPipeline.run).toHaveBeenCalledTimes(1);
+            const [rawSent, envelope] = scanPipeline.run.mock.calls[0];
+            expect(envelope).toEqual({ from: "owner@example.com", to: ["attendee1@example.com", "attendee2@example.com"] });
+
+            const raw = (rawSent as Buffer).toString("utf-8");
+            expect(raw).toContain("text/calendar; charset=utf-8; method=REQUEST");
+            expect(raw).toContain("BEGIN:VEVENT");
+            expect(raw).toContain("UID:abc-123@mapi");
+            expect(raw).toContain("SUMMARY:Standup");
+            expect(raw).toContain("LOCATION:Room 1");
+            expect(raw).toContain("ORGANIZER:mailto:owner@example.com");
+            expect(raw).toContain("ATTENDEE;RSVP=TRUE:mailto:attendee1@example.com");
+            expect(raw).toContain("ATTENDEE;RSVP=TRUE:mailto:attendee2@example.com");
+
+            expect(context.mailTransport.send).toHaveBeenCalledTimes(1);
+            expect((context.messageRepo as any).create).not.toHaveBeenCalled();
+        });
+
+        it("Omits LOCATION from the invite when the event has none.", async () => {
+            const event = makeCalendarEvent({ location: undefined, attendees: [{ address: "attendee@example.com" }] });
+            const context = makeContext({ calendarEventRepo: { findOne: vi.fn().mockResolvedValue(event) } as any });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "calendarEvent:evt1",
+                draftProperties: { "26": "IPM.Appointment" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const scanPipeline = context.scanPipeline as any;
+            const [rawSent] = scanPipeline.run.mock.calls[0];
+            const raw = (rawSent as Buffer).toString("utf-8");
+            expect(raw).not.toContain("LOCATION:");
+        });
     });
 });
