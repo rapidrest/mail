@@ -13,6 +13,7 @@ import { AttendeeResponseStatus, BusyStatus } from "../../models/types.js";
  */
 export const PSETID_APPOINTMENT = "00062002-0000-0000-c000-000000000046";
 export const PSETID_COMMON = "00062008-0000-0000-c000-000000000046";
+export const PSETID_MEETING = "6ed8da90-450b-101b-98da-00aa003f1305";
 
 export const LID_LOCATION = 0x8208;
 export const LID_APPOINTMENT_START_WHOLE = 0x820d;
@@ -24,6 +25,11 @@ export const LID_REMINDER_DELTA = 0x8501;
 export const LID_RESPONSE_STATUS = 0x8218;
 export const LID_APPOINTMENT_RECUR = 0x8216;
 export const LID_TIME_ZONE_STRUCT = 0x8233;
+
+/** `PidLidGlobalObjectId` (`PSETID_Meeting`) - see `GlobalObjectId.ts` for the BLOB it carries and
+ * `MeetingMessageClassHandler.ts` for how a meeting response's own copy of it is correlated back to the
+ * original `CalendarEvent`. */
+export const LID_GLOBAL_OBJECT_ID = 0x00000003;
 
 /** `PidLidBusyStatus`'s wire values (`[MS-OXOCAL]` §2.2.1.2, confirmed this session) - a different numbering
  * than `CalendarSyncAdapter`'s own `BUSY_STATUS_CODES` table for the unrelated MS-ASCAL `BusyStatus` field.

@@ -364,6 +364,25 @@ describe("RopSubmitMessageHandler Tests", () => {
             expect((context.messageRepo as any).create).not.toHaveBeenCalled();
         });
 
+        it("Ignores an unrecognized IPM.Appointment.* subclass exactly the same way (prefix match, not exact match).", async () => {
+            const event = makeCalendarEvent({ attendees: [] });
+            const context = makeContext({ calendarEventRepo: { findOne: vi.fn().mockResolvedValue(event) } as any });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "calendarEvent:evt1",
+                draftProperties: { "26": "IPM.Appointment.SomeSubclass" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            response.readUInt8();
+            response.readUInt8();
+            expect(response.readUInt32LE()).toBe(0);
+        });
+
         it("Omits LOCATION from the invite when the event has none.", async () => {
             const event = makeCalendarEvent({ location: undefined, attendees: [{ address: "attendee@example.com" }] });
             const context = makeContext({ calendarEventRepo: { findOne: vi.fn().mockResolvedValue(event) } as any });
@@ -381,6 +400,33 @@ describe("RopSubmitMessageHandler Tests", () => {
             const [rawSent] = scanPipeline.run.mock.calls[0];
             const raw = (rawSent as Buffer).toString("utf-8");
             expect(raw).not.toContain("LOCATION:");
+        });
+    });
+
+    describe("Meeting-response branch (PidTagMessageClass starts with IPM.Schedule.Meeting.Resp.)", () => {
+        it("Dispatches to submitMeetingResponse and reports success, without touching the mail compose/send path.", async () => {
+            const calendarEventRepo = { find: vi.fn().mockResolvedValue([]) };
+            const context = makeContext({ calendarEventRepo: calendarEventRepo as any });
+            context.session.handles[5] = {
+                type: "message",
+                entityUid: "",
+                draftProperties: { "26": "IPM.Schedule.Meeting.Resp.Pos" },
+            };
+            const handler = new RopSubmitMessageHandler();
+            const writer = new BufferWriter();
+
+            await handler.handle(new BufferReader(buildRequest({})), writer, context);
+
+            const response = new BufferReader(writer.toBuffer());
+            expect(response.readUInt8()).toBe(0x32);
+            expect(response.readUInt8()).toBe(5);
+            expect(response.readUInt32LE()).toBe(0); // ReturnValue - success
+            expect(response.hasMore()).toBe(false);
+
+            // No PidLidGlobalObjectId was ever set on this draft, so submitMeetingResponse should have no-op'd
+            // before even querying the calendar event repo - confirming real dispatch happened either way.
+            expect(context.mailTransport.send).not.toHaveBeenCalled();
+            expect((context.messageRepo as any).create).not.toHaveBeenCalled();
         });
     });
 });

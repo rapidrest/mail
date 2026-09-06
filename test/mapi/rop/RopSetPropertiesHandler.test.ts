@@ -11,10 +11,12 @@ import { MapiSessionContext } from "../../../src/mapi/MapiSessionManager.js";
 
 const PSETID_APPOINTMENT = "00062002-0000-0000-c000-000000000046";
 const PSETID_COMMON = "00062008-0000-0000-c000-000000000046";
+const PSETID_MEETING = "6ed8da90-450b-101b-98da-00aa003f1305";
 const LID_LOCATION = 0x8208;
 const LID_APPOINTMENT_START_WHOLE = 0x820d;
 const LID_APPOINTMENT_RECUR = 0x8216;
 const LID_REMINDER_DELTA = 0x8501;
+const LID_GLOBAL_OBJECT_ID = 0x00000003;
 
 function buildRequest({ logonId = 0, inputHandleIndex = 5, values = [] as TaggedPropertyValue[] }): Buffer {
     const valuesWriter = new BufferWriter();
@@ -190,6 +192,32 @@ describe("RopSetPropertiesHandler Tests", () => {
             handler.handle(new BufferReader(buildRequest({ values })), writer, context);
 
             expect(context.session.handles[5]?.draftProperties).toEqual({ [String(deltaId)]: "15" });
+        });
+
+        it("Tracks PidLidGlobalObjectId (PSETID_Meeting) for meeting-response correlation.", () => {
+            const context = makeContext();
+            context.session.handles[5] = { type: "message", entityUid: "", draftProperties: {} };
+            const goidId = assignOrGetNamedPropertyId(context.session, { guid: PSETID_MEETING, kind: "lid", lid: LID_GLOBAL_OBJECT_ID });
+            const handler = new RopSetPropertiesHandler();
+            const writer = new BufferWriter();
+
+            const values: TaggedPropertyValue[] = [{ propertyId: goidId, propertyType: PropertyType.PtypBinary, value: Buffer.from([1, 2, 3]) }];
+            handler.handle(new BufferReader(buildRequest({ values })), writer, context);
+
+            expect(context.session.handles[5]?.draftProperties).toEqual({ [String(goidId)]: Buffer.from([1, 2, 3]).toString("base64") });
+        });
+
+        it("Does not track an unrecognized LID under the PSETID_Meeting property set.", () => {
+            const context = makeContext();
+            context.session.handles[5] = { type: "message", entityUid: "", draftProperties: {} };
+            const id = assignOrGetNamedPropertyId(context.session, { guid: PSETID_MEETING, kind: "lid", lid: 0x9999 });
+            const handler = new RopSetPropertiesHandler();
+            const writer = new BufferWriter();
+
+            const values: TaggedPropertyValue[] = [{ propertyId: id, propertyType: PropertyType.PtypString, value: "x" }];
+            handler.handle(new BufferReader(buildRequest({ values })), writer, context);
+
+            expect(context.session.handles[5]?.draftProperties).toEqual({});
         });
 
         it("Does not track a named property whose ID was never assigned by RopGetPropertyIdsFromNames.", () => {

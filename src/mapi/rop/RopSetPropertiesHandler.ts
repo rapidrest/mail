@@ -9,6 +9,7 @@ import {
     LID_APPOINTMENT_RECUR,
     LID_APPOINTMENT_START_WHOLE,
     LID_BUSY_STATUS,
+    LID_GLOBAL_OBJECT_ID,
     LID_LOCATION,
     LID_RECURRING,
     LID_REMINDER_DELTA,
@@ -16,6 +17,7 @@ import {
     LID_TIME_ZONE_STRUCT,
     PSETID_APPOINTMENT,
     PSETID_COMMON,
+    PSETID_MEETING,
 } from "./CalendarNamedProperties.js";
 import { resolveNamedProperty } from "./NamedPropertyRegistry.js";
 import type { RopContext, RopHandler } from "./RopHandler.js";
@@ -68,6 +70,11 @@ const TRACKED_APPOINTMENT_LIDS: ReadonlySet<number> = new Set([
     LID_TIME_ZONE_STRUCT,
 ]);
 const TRACKED_COMMON_LIDS: ReadonlySet<number> = new Set([LID_REMINDER_DELTA]);
+
+/** `PidLidGlobalObjectId` - the meeting-response side needs this tracked so `RopSubmitMessageHandler` can
+ * correlate an incoming `"IPM.Schedule.Meeting.Resp.*"` response back to the `CalendarEvent` it answers, via
+ * `MeetingMessageClassHandler.ts`. */
+const TRACKED_MEETING_LIDS: ReadonlySet<number> = new Set([LID_GLOBAL_OBJECT_ID]);
 
 /**
  * `RopSetProperties` (`[MS-OXCPRPT]`/`[MS-OXCROPS]`): sets an explicit, client-chosen list of properties
@@ -149,6 +156,9 @@ export class RopSetPropertiesHandler implements RopHandler {
         }
         if (guid === PSETID_COMMON) {
             return TRACKED_COMMON_LIDS.has(named.lid);
+        }
+        if (guid === PSETID_MEETING) {
+            return TRACKED_MEETING_LIDS.has(named.lid);
         }
         return false;
     }

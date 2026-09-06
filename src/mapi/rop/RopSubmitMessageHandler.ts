@@ -9,6 +9,7 @@ import { scanAndRelay } from "../../util/MailSendUtils.js";
 import { FolderType, MessageImportance, RecipientType, type CalendarEvent } from "../../models/types.js";
 import type { BufferReader, BufferWriter } from "../codec/BufferCursor.js";
 import type { MapiObjectHandle } from "../MapiSessionManager.js";
+import { submitMeetingResponse } from "./MeetingMessageClassHandler.js";
 import type { RopContext, RopHandler } from "./RopHandler.js";
 
 const ROP_ID_SUBMIT_MESSAGE = 0x32;
@@ -33,6 +34,11 @@ const PID_TAG_BODY = 0x1000;
  * `submitAppointment()` instead of the ordinary mail compose/send path below - see that method's own doc
  * comment. */
 const MESSAGE_CLASS_APPOINTMENT_PREFIX = "IPM.Appointment";
+
+/** `PidTagMessageClass` values starting with this prefix (`IPM.Schedule.Meeting.Resp.{Pos,Neg,Tent}`) route
+ * through `MeetingMessageClassHandler.submitMeetingResponse()` instead of every other path here - see that
+ * function's own doc comment. */
+const MESSAGE_CLASS_MEETING_RESPONSE_PREFIX = "IPM.Schedule.Meeting.Resp.";
 
 /** Splits a `PidTagDisplayTo`/`Cc`/`Bcc`-style string on the semicolons real Outlook separates recipients
  * with (also tolerating commas, in case a client or test harness uses that convention instead), trimming and
@@ -75,8 +81,11 @@ export function parseAddressList(value: string | undefined): string[] {
  * `SubmitFlags` (`PreprocessOnly`, ...) is decoded to advance past it correctly but not honored - this
  * pragmatic subset has no transport-agent preprocessing distinction to vary by flag.
  *
- * **Calendar branch**: a draft whose `PidTagMessageClass` starts with `"IPM.Appointment"` is routed to
- * `submitAppointment()` instead of the mail path below - see that method's own doc comment.
+ * **Calendar branches**: a draft whose `PidTagMessageClass` starts with `"IPM.Appointment"` is routed to
+ * `submitAppointment()` instead of the mail path below - see that method's own doc comment. One starting with
+ * `"IPM.Schedule.Meeting.Resp."` (an attendee's own accept/decline/tentative response to a meeting this server
+ * previously invited them to) is routed to `MeetingMessageClassHandler.submitMeetingResponse()` instead - see
+ * that function's own doc comment.
  *
  * @author Jean-Philippe Steinmetz
  */
@@ -96,13 +105,21 @@ export class RopSubmitMessageHandler implements RopHandler {
             return;
         }
 
-        const messageClass = handle.draftProperties?.[String(PID_TAG_MESSAGE_CLASS)] ?? "IPM.Note";
+        const properties = handle.draftProperties ?? {};
+        const messageClass = properties[String(PID_TAG_MESSAGE_CLASS)] ?? "IPM.Note";
         if (messageClass.startsWith(MESSAGE_CLASS_APPOINTMENT_PREFIX)) {
             await this.submitAppointment(handle, context, writer, inputHandleIndex);
             return;
         }
+        if (messageClass.startsWith(MESSAGE_CLASS_MEETING_RESPONSE_PREFIX)) {
+            await submitMeetingResponse(messageClass, properties, context);
+            writer.writeUInt8(ROP_ID_SUBMIT_MESSAGE);
+            writer.writeUInt8(inputHandleIndex);
+            writer.writeUInt32LE(0); // ReturnValue - success, see MeetingMessageClassHandler's own doc comment
+            // on why every failure mode there is a silent no-op rather than surfaced here.
+            return;
+        }
 
-        const properties = handle.draftProperties ?? {};
         const to = parseAddressList(properties[String(PID_TAG_DISPLAY_TO)]);
         const cc = parseAddressList(properties[String(PID_TAG_DISPLAY_CC)]);
         const bcc = parseAddressList(properties[String(PID_TAG_DISPLAY_BCC)]);
