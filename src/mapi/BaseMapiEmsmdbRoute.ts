@@ -18,6 +18,7 @@ import { MapiSessionContext, MapiSessionManager } from "./MapiSessionManager.js"
 import { dispatchRops } from "./RopDispatcher.js";
 import type { RopContext, RopHandler } from "./rop/RopHandler.js";
 import { resolveCallerMailboxUid } from "../util/MailboxScopeUtils.js";
+import { RecoverableRepoUtils } from "../util/RecoverableRepoUtils.js";
 import type { BlobStore } from "../blob/BlobStore.js";
 import { ScanPipeline } from "../scan/ScanPipeline.js";
 import { Folder, Mailbox } from "../models/types.js";
@@ -107,15 +108,15 @@ export abstract class BaseMapiEmsmdbRoute<M extends Mailbox> {
             name: this.mailboxClass.name,
             args: [this.mailboxClass],
         });
-        this.folderRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.folderRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.folderClass.name,
             args: [this.folderClass],
         });
-        this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.messageRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.messageClass.name,
             args: [this.messageClass],
         });
-        this.calendarEventRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        this.calendarEventRepo = await this._objectFactory!.newInstance(RecoverableRepoUtils, {
             name: this.calendarEventClass.name,
             args: [this.calendarEventClass],
         });

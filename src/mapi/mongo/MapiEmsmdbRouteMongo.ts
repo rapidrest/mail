@@ -21,6 +21,8 @@ import { RopWriteStreamHandler } from "../rop/RopWriteStreamHandler.js";
 import { RopSaveChangesMessageHandler } from "../rop/RopSaveChangesMessageHandler.js";
 import { RopSubmitMessageHandler } from "../rop/RopSubmitMessageHandler.js";
 import { RopGetPropertyIdsFromNamesHandler } from "../rop/RopGetPropertyIdsFromNamesHandler.js";
+import { RopDeleteMessagesHandler } from "../rop/RopDeleteMessagesHandler.js";
+import { RopDeleteFolderHandler } from "../rop/RopDeleteFolderHandler.js";
 
 /**
  * Mongo-backed concrete `BaseMapiEmsmdbRoute`. A deployment mounts this at the well-known MAPI/HTTP path via
@@ -52,5 +54,7 @@ export class MapiEmsmdbRouteMongo extends BaseMapiEmsmdbRoute<MailboxMongo> {
         RopSaveChangesMessageHandler,
         RopSubmitMessageHandler,
         RopGetPropertyIdsFromNamesHandler,
+        RopDeleteMessagesHandler,
+        RopDeleteFolderHandler,
     ];
 }
